@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 /// Configuration for ANNP Micro-Block Nodes and Topology.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MicroBlockConfig {
+    /// Mesh topology dimensions: rows * cols (e.g. 100 * 100 = 10,000 nodes)
+    pub mesh_rows: usize,
+    pub mesh_cols: usize,
     /// Dimension of single particle vector (e.g., 64 or 128)
     pub d_head: usize,
     /// FFN intermediate layer expansion multiplier (default: 8)
@@ -25,11 +28,18 @@ pub struct MicroBlockConfig {
     pub alpha_init: f32,
     /// Base sphere radius for Sphere Normalization
     pub sphere_radius: f32,
+    /// Double-factor eviction parameters
+    pub lambda_temporal: f32,
+    pub lambda_frequency: f32,
+    pub eviction_threshold: f32,
+    pub pruning_threshold: f32,
 }
 
 impl Default for MicroBlockConfig {
     fn default() -> Self {
         Self {
+            mesh_rows: 10,
+            mesh_cols: 10,
             d_head: 64,
             ffn_expansion: 8,
             initial_energy: 1.0,
@@ -41,7 +51,17 @@ impl Default for MicroBlockConfig {
             norm_strategy: NormStrategy::MicroRMSNorm,
             alpha_init: 0.01,
             sphere_radius: 1.0,
+            lambda_temporal: 0.001,
+            lambda_frequency: 0.01,
+            eviction_threshold: 1e-4,
+            pruning_threshold: 1e-5,
         }
+    }
+}
+
+impl MicroBlockConfig {
+    pub fn num_nodes(&self) -> usize {
+        self.mesh_rows * self.mesh_cols
     }
 }
 

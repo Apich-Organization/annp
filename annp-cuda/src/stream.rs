@@ -21,7 +21,7 @@ impl CudaStreamManager {
 
     pub fn synchronize(&self) {
         #[cfg(feature = "cuda")]
-        unsafe {
+        {
             // Synchronize CUDA stream if active
         }
     }

@@ -8,9 +8,10 @@ use candle_core::{Device, Tensor};
 fn main() -> candle_core::Result<()> {
     println!("=== Initializing Asynchronous Neural Network Protocol (ANNP) PoC ===");
 
-    let num_nodes = 16;
     let num_shards = 4;
     let config = MicroBlockConfig {
+        mesh_rows: 4,
+        mesh_cols: 4,
         d_head: 64,
         ffn_expansion: 8,
         initial_energy: 1.0,
@@ -22,10 +23,14 @@ fn main() -> candle_core::Result<()> {
         norm_strategy: NormStrategy::MicroRMSNorm,
         alpha_init: 0.01,
         sphere_radius: 1.0,
+        lambda_temporal: 0.001,
+        lambda_frequency: 0.01,
+        eviction_threshold: 1e-4,
+        pruning_threshold: 1e-5,
     };
 
     let device = Device::Cpu;
-    let mut model = ANNPModel::new(num_nodes, num_shards, config, device.clone());
+    let mut model = ANNPModel::new(config.num_nodes(), num_shards, config, device.clone());
 
     // Generate simulated Token Embeddings for seq_len = 8, d_model = 4 * 64 = 256
     let seq_len = 8;

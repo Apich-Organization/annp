@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+cuda = ["annp-model/cuda", "annp-cuda/cuda"]
+
 [dependencies]
 annp-core = { path = "../annp-core" }
 annp-cuda = { path = "../annp-cuda" }

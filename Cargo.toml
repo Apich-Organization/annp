@@ -5,6 +5,7 @@ members = [
     "annp-cuda",
     "annp-model",
     "annp-trainer",
+    "annp-cli",
 ]
 
 [workspace.package]
