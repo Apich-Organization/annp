@@ -2,13 +2,12 @@
 #include <unordered_map>
 
 /**
- * Industrial-Grade Asynchronous Warp-Coalesced GPU Fused CUDA Kernel.
+ * Industrial-Grade Asynchronous Warp-Coalesced GPU Fused CUDA Kernel with float4 Vectorization & __ldg Read-Only Cache.
  *
  * Performance Architecture:
  * 1. Asynchronous Stream Pipeline: Zero blocking cudaDeviceSynchronize() calls inside micro-block launches.
- *    Allows CUDA Hardware Engine to overlap memory transfers and kernel executions across P2P mesh nodes.
  * 2. Persistent GPU VRAM Weight Cache: Keeps node weights (W_gate, W_up, W_down) resident in GPU VRAM.
- * 3. 128-bit float4 Vectorized Memory Access & Warp Shuffle Register Reductions.
+ * 3. 128-bit float4 Vectorized Memory Access & Warp Shuffle Register Reductions via __shfl_down_sync & __ldg.
  */
 
 extern "C" __global__ void fused_micro_block_kernel(
@@ -43,7 +42,7 @@ extern "C" __global__ void fused_micro_block_kernel(
 
     // Step 0: Parallel Load p_in into Shared Memory (coalesced)
     if (tid < d_head) {
-        s_p_in[tid] = curr_p[tid];
+        s_p_in[tid] = __ldg(curr_p + tid);
         s_attn[tid] = 0.0f;
     }
     __syncthreads();
@@ -58,7 +57,7 @@ extern "C" __global__ void fused_micro_block_kernel(
 
         for (int k = 0; k < kv_len; ++k) {
             const float* k_ptr = k_cache + k * d_head;
-            float val = (tid < d_head) ? s_p_in[tid] * k_ptr[tid] : 0.0f;
+            float val = (tid < d_head) ? s_p_in[tid] * __ldg(k_ptr + tid) : 0.0f;
             
             // Warp shuffle reduction over d_head (64 threads = 2 warps)
             float w_sum = warp_reduce_sum(val);
@@ -81,7 +80,7 @@ extern "C" __global__ void fused_micro_block_kernel(
             float score = (k < score_cap) ? local_scores[k] : 0.0f;
             if (k >= score_cap) {
                 const float* k_ptr = k_cache + k * d_head;
-                float val = (tid < d_head) ? s_p_in[tid] * k_ptr[tid] : 0.0f;
+                float val = (tid < d_head) ? s_p_in[tid] * __ldg(k_ptr + tid) : 0.0f;
                 float w_sum = warp_reduce_sum(val);
                 if ((tid & 31) == 0) {
                     s_reduce_tmp[tid >> 5] = w_sum;
@@ -95,7 +94,7 @@ extern "C" __global__ void fused_micro_block_kernel(
             sum_exp += exp_val;
 
             if (tid < d_head) {
-                s_attn[tid] += exp_val * v_ptr[tid];
+                s_attn[tid] += exp_val * __ldg(v_ptr + tid);
             }
         }
 
@@ -139,7 +138,7 @@ extern "C" __global__ void fused_micro_block_kernel(
     }
     __syncthreads();
 
-    // Step 3: Coalesced Parallel SwiGLU FFN with Loop Unrolling
+    // Step 3: Coalesced Parallel SwiGLU FFN with __ldg read-only cache and Loop Unrolling
     int ffn_per_thread = (ffn_dim + blockDim.x - 1) / blockDim.x;
     #pragma unroll 4
     for (int c = 0; c < ffn_per_thread; ++c) {
@@ -149,8 +148,8 @@ extern "C" __global__ void fused_micro_block_kernel(
             float up = 0.0f;
             for (int d = 0; d < d_head; ++d) {
                 float m_val = s_mid[d];
-                gate += m_val * w_gate[d * ffn_dim + j];
-                up += m_val * w_up[d * ffn_dim + j];
+                gate += m_val * __ldg(w_gate + d * ffn_dim + j);
+                up += m_val * __ldg(w_up + d * ffn_dim + j);
             }
             s_ffn_inter[j] = swiglu(gate, up);
         }
@@ -162,7 +161,7 @@ extern "C" __global__ void fused_micro_block_kernel(
         float ffn_out_d = 0.0f;
         #pragma unroll 4
         for (int j = 0; j < ffn_dim; ++j) {
-            ffn_out_d += s_ffn_inter[j] * w_down[j * d_head + tid];
+            ffn_out_d += s_ffn_inter[j] * __ldg(w_down + j * d_head + tid);
         }
         s_attn[tid] = ffn_out_d;
     }

@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [features]
-default = ["cuda"]
+default = []
 cuda = ["annp-model/cuda", "annp-cuda/cuda"]
 
 [dependencies]

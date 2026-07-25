@@ -5,6 +5,40 @@ pub mod sqlite_parser;
 use candle_core::{Device, Result, Tensor};
 use std::path::Path;
 
+/// IXIA DATASET SPECIFICATION PROTOCOL FOR ANNP (Asynchronous Neural Network Protocol)
+/// ==================================================================================
+///
+/// Supported Dataset Ingestion Formats & Structural Layout Guidelines:
+///
+/// 1. JSON / JSONL Format ("json" | "jsonl"):
+///    - Structure: Array of JSON objects or Line-delimited JSON (JSONL).
+///    - Schema Fields:
+///      * `input_text` (String): Raw text prompt/sequence to be vectorized.
+///      * OR `embedding` (Array of Floats [seq_len * d_model]): Pre-vectorized dense matrix.
+///      * OR `tokens` (Array of Integer IDs): Token ID sequence.
+///    - Example (JSONL):
+///      {"input_text": "ANNP Multi-Frequency Harmonic Wave Simulation"}
+///      {"embedding": [0.12, -0.45, 0.88, ...]}
+///
+/// 2. CSV Format ("csv"):
+///    - Header Required: Yes.
+///    - Schema Columns:
+///      * Column `text` or `content` (String): Raw sequence text.
+///      * OR Numeric columns `f0`, `f1`, ..., `f_{d_model-1}` representing token dimensions.
+///    - Example CSV:
+///      text
+///      "ANNP P2P Mesh Routing Analysis Sequence"
+///
+/// 3. SQLite Database Format ("sqlite" | "db"):
+///    - Required Table: `dataset` or `samples`
+///    - Required Columns: `id` (INTEGER PRIMARY KEY), `content` (TEXT) or `vector` (BLOB/TEXT).
+///    - Query Protocol: `SELECT content FROM dataset LIMIT 1000;`
+///
+/// 4. Synthetic Pattern Generator ("synthetic" | "pattern"):
+///    - Generates multi-frequency harmonic wave resonances over broad time domain [-10\pi, 10\pi]:
+///      $y(t, d) = \sin(0.1t + 0.05d) + 0.35 \sin(2.5t + 3d) + 0.2 \sin(0.2t \cdot d)$
+///
+
 pub enum DatasetFormat {
     Json,
     Jsonl,

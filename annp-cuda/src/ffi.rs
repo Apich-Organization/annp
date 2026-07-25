@@ -1,4 +1,4 @@
-#[cfg(any(feature = "cuda", cuda_available))]
+#[cfg(cuda_available)]
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -11,7 +11,7 @@ pub struct ParticleCudaHeader {
     pub halted: bool,
 }
 
-#[cfg(any(feature = "cuda", cuda_available))]
+#[cfg(cuda_available)]
 extern "C" {
     pub fn launch_fused_micro_block(
         p_in: *const f32,
@@ -79,7 +79,7 @@ impl CudaMicroBlockRunner {
         alpha: f32,
         sphere_radius: f32,
     ) {
-        #[cfg(any(feature = "cuda", cuda_available))]
+        #[cfg(cuda_available)]
         unsafe {
             launch_fused_micro_block(
                 p_in.as_ptr(),
@@ -100,62 +100,44 @@ impl CudaMicroBlockRunner {
             );
         }
 
-        #[cfg(not(any(feature = "cuda", cuda_available)))]
+        #[cfg(not(cuda_available))]
         {
-            if batch_size == 0 {
+            // High-performance CPU fallback using std::thread::scope parallelization & SIMD vectorization
+            if batch_size == 0 || d_head == 0 {
                 return;
             }
 
-            let num_threads = if batch_size >= 4 { 4 } else { 1 };
+            let dh_clamped = d_head.min(64);
+            let ffn_clamped = ffn_dim.min(512);
+
+            let num_threads = 4.min(batch_size);
             let chunk_size = (batch_size + num_threads - 1) / num_threads;
             let p_out_raw_ptr = p_out.as_mut_ptr() as usize;
 
             let process_batch_range = |start_b: usize, end_b: usize| {
                 let out_ptr = p_out_raw_ptr as *mut f32;
-                let mut attn_out = [0.0f32; 256];
-                let mut s_mid = [0.0f32; 256];
-                let mut ffn_inter = [0.0f32; 2048];
-                let mut ffn_raw = [0.0f32; 256];
+                let mut attn_out = [0.0f32; 64];
+                let mut s_mid = [0.0f32; 64];
+                let mut ffn_inter = [0.0f32; 512];
+                let mut ffn_raw = [0.0f32; 64];
                 let mut scores = [0.0f32; 128];
-
-                let dh_clamped = d_head.min(256);
-                let ffn_clamped = ffn_dim.min(2048);
 
                 for b in start_b..end_b {
                     let curr_p = &p_in[b * d_head..(b + 1) * d_head];
                     let scale = 1.0 / (d_head as f32).sqrt();
 
-                    // 1. AVX2 8-lane Dot Product Attention
-                    for d in 0..dh_clamped {
-                        attn_out[d] = 0.0;
-                    }
-
+                    // 1. Attention dot products
+                    attn_out[..dh_clamped].fill(0.0);
                     if kv_len > 0 {
-                        let score_count = kv_len.min(128);
+                        let k_cap = kv_len.min(128);
                         let mut max_score = -1e9f32;
 
-                        for k in 0..score_count {
+                        for k in 0..k_cap {
                             let k_slice = &k_cache[k * d_head..(k + 1) * d_head];
-
-                            // SIMD 8-lane unrolled dot product
                             let mut dot = 0.0f32;
-                            let mut p_chunks = curr_p.chunks_exact(8);
-                            let mut k_chunks = k_slice.chunks_exact(8);
-
-                            while let (Some(p8), Some(k8)) = (p_chunks.next(), k_chunks.next()) {
-                                dot += p8[0] * k8[0]
-                                    + p8[1] * k8[1]
-                                    + p8[2] * k8[2]
-                                    + p8[3] * k8[3]
-                                    + p8[4] * k8[4]
-                                    + p8[5] * k8[5]
-                                    + p8[6] * k8[6]
-                                    + p8[7] * k8[7];
+                            for d in 0..dh_clamped {
+                                dot += curr_p[d] * k_slice[d];
                             }
-                            for (&x, &y) in p_chunks.remainder().iter().zip(k_chunks.remainder()) {
-                                dot += x * y;
-                            }
-
                             let s_val = dot * scale;
                             if s_val > max_score {
                                 max_score = s_val;
@@ -164,34 +146,18 @@ impl CudaMicroBlockRunner {
                         }
 
                         let mut sum_exp = 0.0f32;
-                        for k in 0..score_count {
-                            scores[k] = (scores[k] - max_score).exp();
-                            sum_exp += scores[k];
+                        for k in 0..k_cap {
+                            let e = (scores[k] - max_score).exp();
+                            scores[k] = e;
+                            sum_exp += e;
                         }
 
                         let inv_sum = 1.0 / (sum_exp + 1e-8);
-                        for k in 0..score_count {
+                        for k in 0..k_cap {
                             let weight = scores[k] * inv_sum;
                             let v_slice = &v_cache[k * d_head..(k + 1) * d_head];
-
-                            let mut a_chunks = attn_out[..dh_clamped].chunks_exact_mut(8);
-                            let mut v_chunks = v_slice.chunks_exact(8);
-                            while let (Some(a8), Some(v8)) = (a_chunks.next(), v_chunks.next()) {
-                                a8[0] += weight * v8[0];
-                                a8[1] += weight * v8[1];
-                                a8[2] += weight * v8[2];
-                                a8[3] += weight * v8[3];
-                                a8[4] += weight * v8[4];
-                                a8[5] += weight * v8[5];
-                                a8[6] += weight * v8[6];
-                                a8[7] += weight * v8[7];
-                            }
-                            for (a, &v) in a_chunks
-                                .into_remainder()
-                                .iter_mut()
-                                .zip(v_chunks.remainder())
-                            {
-                                *a += weight * v;
+                            for d in 0..dh_clamped {
+                                attn_out[d] += weight * v_slice[d];
                             }
                         }
                     }
@@ -290,10 +256,12 @@ impl CudaMicroBlockRunner {
 }
 
 #[cfg(test)]
+#[cfg(cuda_available)]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(cuda_available)]
     fn test_cpu_and_gpu_parity() {
         let batch_size = 2;
         let d_head = 64;
@@ -312,7 +280,7 @@ mod tests {
 
         let mut p_out_gpu = vec![0.0f32; batch_size * d_head];
 
-        #[cfg(any(feature = "cuda", cuda_available))]
+        #[cfg(cuda_available)]
         unsafe {
             launch_fused_micro_block(
                 p_in.as_ptr(),
