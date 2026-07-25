@@ -28,73 +28,46 @@ impl RoutingTable {
         }
     }
 
-    /// Prune dead/inactive routing links whose max weight norm falls below threshold
-    pub fn prune_dead_links(&mut self, pruning_threshold: f32) {
-        let num_neighbors = self.neighbors.len();
-        if num_neighbors <= 1 {
-            return;
-        }
-
-        let mut keep_indices = Vec::new();
-        for k in 0..num_neighbors {
-            let mut norm_sq = 0.0f32;
-            for d in 0..self.d_head {
-                let w = self.weights[d * num_neighbors + k];
-                norm_sq += w * w;
-            }
-            let norm = (norm_sq / (self.d_head as f32)).sqrt();
-            if norm >= pruning_threshold {
-                keep_indices.push(k);
-            }
-        }
-
-        if keep_indices.is_empty() || keep_indices.len() == num_neighbors {
-            return;
-        }
-
-        let new_num_neighbors = keep_indices.len();
-        let mut new_neighbors = Vec::with_capacity(new_num_neighbors);
-        let mut new_weights = vec![0.0f32; self.d_head * new_num_neighbors];
-
-        for (new_k, &old_k) in keep_indices.iter().enumerate() {
-            new_neighbors.push(self.neighbors[old_k]);
-            for d in 0..self.d_head {
-                new_weights[d * new_num_neighbors + new_k] =
-                    self.weights[d * num_neighbors + old_k];
-            }
-        }
-
-        self.neighbors = new_neighbors;
-        self.weights = new_weights;
-    }
-
-    /// Predict next hop neighbor node index using Q-Routing dot product + Softmax
+    /// Predict next hop neighbor node index using Q-Routing dot product + Softmax (0 heap allocations)
     pub fn select_next_hop(&self, particle: &Particle, temperature: f32) -> usize {
         let num_neighbors = self.neighbors.len();
         if num_neighbors == 0 {
             return 0;
         }
 
-        let mut logits = vec![0.0f32; num_neighbors];
-        for k in 0..num_neighbors {
+        let n_clamped = num_neighbors.min(64);
+        let mut logits = [0.0f32; 64];
+        let mut exps = [0.0f32; 64];
+
+        let temp_inv = 1.0 / temperature.max(1e-4);
+        let mut max_logit = f32::NEG_INFINITY;
+
+        for k in 0..n_clamped {
             let mut dot = 0.0f32;
             for d in 0..self.d_head {
                 dot += particle.payload[d] * self.weights[d * num_neighbors + k];
             }
-            logits[k] = dot / temperature.max(1e-4);
+            let l = dot * temp_inv;
+            logits[k] = l;
+            if l > max_logit {
+                max_logit = l;
+            }
         }
 
-        // Softmax & Argmax sampling
-        let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exps: Vec<f32> = logits.iter().map(|&l| (l - max_logit).exp()).collect();
-        let sum_exp: f32 = exps.iter().sum();
+        let mut sum_exp = 0.0f32;
+        for k in 0..n_clamped {
+            let e = (logits[k] - max_logit).exp();
+            exps[k] = e;
+            sum_exp += e;
+        }
 
         let mut rng = rand::thread_rng();
         let p: f32 = rng.gen_range(0.0..1.0);
         let mut cum_sum = 0.0f32;
+        let inv_sum = 1.0 / (sum_exp + 1e-8);
 
-        for k in 0..num_neighbors {
-            cum_sum += exps[k] / (sum_exp + 1e-8);
+        for k in 0..n_clamped {
+            cum_sum += exps[k] * inv_sum;
             if p <= cum_sum {
                 return self.neighbors[k];
             }
@@ -128,13 +101,6 @@ impl TopologyGrid {
         Self {
             num_nodes,
             routing_tables,
-        }
-    }
-
-    /// Execute synaptic link pruning across all local routing tables
-    pub fn prune_all_links(&mut self, pruning_threshold: f32) {
-        for rt in self.routing_tables.iter_mut() {
-            rt.prune_dead_links(pruning_threshold);
         }
     }
 }

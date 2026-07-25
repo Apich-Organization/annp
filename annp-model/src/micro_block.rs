@@ -27,6 +27,9 @@ pub struct MicroBlockNode {
     // Node state statistics
     pub cumulative_sequence_len: u64, // S_j for plastic hardening
     pub activation_count: u64,
+    // Reusable workspace scratch buffers to avoid heap allocations in process_batch
+    pub p_in_buf: Vec<f32>,
+    pub p_out_buf: Vec<f32>,
 }
 
 impl MicroBlockNode {
@@ -68,6 +71,8 @@ impl MicroBlockNode {
             last_p_in,
             cumulative_sequence_len: 0,
             activation_count: 0,
+            p_in_buf: Vec::with_capacity(64 * d_head),
+            p_out_buf: Vec::with_capacity(64 * d_head),
         }
     }
 
@@ -87,7 +92,7 @@ impl MicroBlockNode {
         self.v_cache.extend_from_slice(&particle.payload);
     }
 
-    /// Process a batch of particles through Micro-Block CUDA/CPU computation pipeline
+    /// Process a batch of particles through Micro-Block CUDA/CPU computation pipeline (0 heap allocations)
     pub fn process_batch(&mut self, particles: &mut [Particle]) {
         let batch_size = particles.len();
         if batch_size == 0 {
@@ -102,8 +107,10 @@ impl MicroBlockNode {
             NormStrategy::SphereNormalization => 1,
         };
 
-        // Flatten p_in payloads and cache last_p_in
-        let mut p_in_flat = Vec::with_capacity(batch_size * d_head);
+        // Flatten p_in payloads and cache last_p_in into reusable p_in_buf
+        self.p_in_buf.clear();
+        self.p_in_buf.reserve(batch_size * d_head);
+
         for (d, val) in self.last_p_in.iter_mut().enumerate() {
             *val = 0.0;
             for p in particles.iter() {
@@ -113,20 +120,21 @@ impl MicroBlockNode {
         }
 
         for p in particles.iter() {
-            p_in_flat.extend_from_slice(&p.payload);
+            self.p_in_buf.extend_from_slice(&p.payload);
         }
 
-        let mut p_out_flat = vec![0.0f32; batch_size * d_head];
+        self.p_out_buf.clear();
+        self.p_out_buf.resize(batch_size * d_head, 0.0f32);
 
         // Launch CUDA / Fused CudaMicroBlockRunner kernel
         CudaMicroBlockRunner::execute_fused(
-            &p_in_flat,
+            &self.p_in_buf,
             &self.k_cache,
             &self.v_cache,
             &self.w_gate,
             &self.w_up,
             &self.w_down,
-            &mut p_out_flat,
+            &mut self.p_out_buf,
             batch_size,
             d_head,
             ffn_dim,
@@ -138,7 +146,7 @@ impl MicroBlockNode {
 
         // Update particles, evaluation halting condition and metrics
         for (i, p) in particles.iter_mut().enumerate() {
-            let out_slice = &p_out_flat[i * d_head..(i + 1) * d_head];
+            let out_slice = &self.p_out_buf[i * d_head..(i + 1) * d_head];
             let delta_p = compute_delta_p(&p.payload, out_slice);
 
             p.payload.copy_from_slice(out_slice);

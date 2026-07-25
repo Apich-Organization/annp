@@ -26,7 +26,6 @@ pub struct ModelCheckpoint {
     pub config: MicroBlockConfig,
     pub nodes: Vec<NodeCheckpoint>,
     pub routing_tables: Vec<RoutingTable>,
-    pub w_egress: Vec<f32>,
 }
 
 impl ModelCheckpoint {
@@ -74,14 +73,12 @@ impl ModelCheckpoint {
         let stage_u32 = self.stage_completed as u32;
         let epoch_u32 = self.epoch_completed as u32;
         let num_nodes_u32 = self.nodes.len() as u32;
-        let num_routes_u32 = self.routing_tables.len() as u32;
 
         file.write_all(&stage_u32.to_le_bytes())?;
         file.write_all(&epoch_u32.to_le_bytes())?;
         file.write_all(&num_nodes_u32.to_le_bytes())?;
-        file.write_all(&num_routes_u32.to_le_bytes())?;
 
-        // 1. Write Node Micro-Block & Non-linear FFN Weights
+        // Write Node Weights
         for node in &self.nodes {
             file.write_all(&(node.node_id as u32).to_le_bytes())?;
             file.write_all(&node.alpha.to_le_bytes())?;
@@ -103,28 +100,6 @@ impl ModelCheckpoint {
             file.write_all(up_bytes)?;
             file.write_all(&(node.w_down.len() as u32).to_le_bytes())?;
             file.write_all(down_bytes)?;
-        }
-
-        // 2. Write Egress Serializer Weights
-        let egress_bytes = unsafe {
-            std::slice::from_raw_parts(self.w_egress.as_ptr() as *const u8, self.w_egress.len() * 4)
-        };
-        file.write_all(&(self.w_egress.len() as u32).to_le_bytes())?;
-        file.write_all(egress_bytes)?;
-
-        // 3. Write P2P Grid Q-Routing Tables
-        for rt in &self.routing_tables {
-            file.write_all(&(rt.d_head as u32).to_le_bytes())?;
-            file.write_all(&(rt.neighbors.len() as u32).to_le_bytes())?;
-            for &n in &rt.neighbors {
-                file.write_all(&(n as u32).to_le_bytes())?;
-            }
-
-            let q_weight_bytes = unsafe {
-                std::slice::from_raw_parts(rt.weights.as_ptr() as *const u8, rt.weights.len() * 4)
-            };
-            file.write_all(&(rt.weights.len() as u32).to_le_bytes())?;
-            file.write_all(q_weight_bytes)?;
         }
 
         Ok(())
@@ -151,12 +126,8 @@ impl ModelCheckpoint {
         let epoch_completed = u32::from_le_bytes(buf4) as usize;
         file.read_exact(&mut buf4)?;
         let num_nodes = u32::from_le_bytes(buf4) as usize;
-        file.read_exact(&mut buf4)?;
-        let num_routes = u32::from_le_bytes(buf4) as usize;
 
         let mut nodes = Vec::with_capacity(num_nodes);
-
-        // 1. Read Node Micro-Block Weights
         for _ in 0..num_nodes {
             file.read_exact(&mut buf4)?;
             let node_id = u32::from_le_bytes(buf4) as usize;
@@ -204,44 +175,6 @@ impl ModelCheckpoint {
             });
         }
 
-        // 2. Read Egress Serializer Weights
-        file.read_exact(&mut buf4)?;
-        let egress_len = u32::from_le_bytes(buf4) as usize;
-        let mut w_egress = vec![0.0f32; egress_len];
-        let egress_bytes = unsafe {
-            std::slice::from_raw_parts_mut(w_egress.as_mut_ptr() as *mut u8, egress_len * 4)
-        };
-        file.read_exact(egress_bytes)?;
-
-        // 3. Read Routing Tables
-        let mut routing_tables = Vec::with_capacity(num_routes);
-        for _ in 0..num_routes {
-            file.read_exact(&mut buf4)?;
-            let d_head = u32::from_le_bytes(buf4) as usize;
-            file.read_exact(&mut buf4)?;
-            let num_neighbors = u32::from_le_bytes(buf4) as usize;
-
-            let mut neighbors = Vec::with_capacity(num_neighbors);
-            for _ in 0..num_neighbors {
-                file.read_exact(&mut buf4)?;
-                neighbors.push(u32::from_le_bytes(buf4) as usize);
-            }
-
-            file.read_exact(&mut buf4)?;
-            let weights_len = u32::from_le_bytes(buf4) as usize;
-            let mut weights = vec![0.0f32; weights_len];
-            let weight_bytes = unsafe {
-                std::slice::from_raw_parts_mut(weights.as_mut_ptr() as *mut u8, weights_len * 4)
-            };
-            file.read_exact(weight_bytes)?;
-
-            routing_tables.push(RoutingTable {
-                d_head,
-                neighbors,
-                weights,
-            });
-        }
-
         let default_config = MicroBlockConfig::default();
 
         Ok(Self {
@@ -249,8 +182,7 @@ impl ModelCheckpoint {
             epoch_completed,
             config: default_config,
             nodes,
-            routing_tables,
-            w_egress,
+            routing_tables: Vec::new(),
         })
     }
 
@@ -265,9 +197,6 @@ impl ModelCheckpoint {
                 node.cumulative_sequence_len = node_ckpt.cumulative_sequence_len;
                 node.activation_count = node_ckpt.activation_count;
             }
-        }
-        if !self.w_egress.is_empty() && self.w_egress.len() == model.serializer.w_egress.len() {
-            model.serializer.w_egress = self.w_egress.clone();
         }
         if !self.routing_tables.is_empty() {
             model.topology.routing_tables = self.routing_tables.clone();
@@ -299,7 +228,6 @@ impl ModelCheckpoint {
             config: model.config.clone(),
             nodes,
             routing_tables: model.topology.routing_tables.clone(),
-            w_egress: model.serializer.w_egress.clone(),
         }
     }
 }

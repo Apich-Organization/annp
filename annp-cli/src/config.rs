@@ -35,7 +35,6 @@ pub struct EvictionSection {
     pub lambda_frequency: f32,
     pub eviction_threshold: f32,
     pub pruning_threshold: f32,
-    pub neurogenesis_threshold: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,8 +68,7 @@ impl Default for AnnpTomlConfig {
                 lambda_temporal: 0.001,
                 lambda_frequency: 0.01,
                 eviction_threshold: 1e-4,
-                pruning_threshold: 1e-7,
-                neurogenesis_threshold: Some(50),
+                pruning_threshold: 1e-5,
             },
             stage0_wave: StageConfig {
                 enabled: true,
@@ -128,7 +126,6 @@ impl AnnpTomlConfig {
             lambda_frequency: self.eviction.lambda_frequency,
             eviction_threshold: self.eviction.eviction_threshold,
             pruning_threshold: self.eviction.pruning_threshold,
-            neurogenesis_threshold: self.eviction.neurogenesis_threshold.unwrap_or(50),
             queue_backpressure_alpha: 0.05,
             min_routing_entropy_noise: 0.05,
             max_alpha_residual: 0.1,

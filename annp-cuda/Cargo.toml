@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [features]
-default = []
+default = ["cuda"]
 cuda = []
 
 [dependencies]
@@ -13,3 +13,8 @@ annp-core = { path = "../annp-core" }
 candle-core.workspace = true
 thiserror.workspace = true
 log.workspace = true
+
+[build-dependencies]
+cc = "1.0"
+
+

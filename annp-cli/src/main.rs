@@ -37,6 +37,9 @@ enum Commands {
         /// Checkpoint format: "annpb" (high-performance binary) or "json"
         #[arg(short = 'f', long, default_value = "annpb")]
         format: String,
+        /// Target execution device: "auto", "cpu", or "cuda"
+        #[arg(short = 'd', long, default_value = "auto")]
+        device: String,
         /// Directory to save output model checkpoints
         #[arg(short, long, default_value = "checkpoints")]
         output_dir: PathBuf,
@@ -55,9 +58,9 @@ enum Commands {
         /// Runtime routing temperature override (\tau > 0)
         #[arg(short = 't', long)]
         temperature: Option<f32>,
-        /// Enable Online Continual Learning mode during inference (updates node activation counts & plastic hardening)
-        #[arg(short = 'c', long)]
-        continual: bool,
+        /// Target execution device: "auto", "cpu", or "cuda"
+        #[arg(short = 'd', long, default_value = "auto")]
+        device: String,
         /// Save output sequence tensor to binary file (.annpb)
         #[arg(short = 's', long)]
         save_output: Option<PathBuf>,
@@ -87,14 +90,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             stage,
             resume_from,
             format,
+            device,
             output_dir,
-        } => execute_train(config, stage, resume_from, format, output_dir)?,
+        } => execute_train(config, stage, resume_from, format, device, output_dir)?,
         Commands::Run {
             config,
             checkpoint,
             input,
             temperature,
-            continual,
+            device,
             save_output,
             benchmark,
         } => execute_run(
@@ -102,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint,
             input,
             temperature,
-            continual,
+            device,
             save_output,
             benchmark,
         )?,

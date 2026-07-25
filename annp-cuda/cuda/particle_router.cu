@@ -1,11 +1,12 @@
 #include "common.cuh"
 
 /**
- * Industrial-Standard Optimized CUDA Kernel for Particle Q-Routing & Halting Evaluation.
+ * Industrial-Standard Asynchronous CUDA Kernel for Particle Q-Routing & Halting Evaluation.
  * Optimizations applied:
  * 1. 128-bit float4 vectorized memory loading for particle payloads.
  * 2. Vectorized dot-product evaluation against Q-Routing table.
  * 3. Warp Shuffle & Register-level Shannon Entropy and Delta-p calculations.
+ * 4. Asynchronous CUDA Stream Execution (0 blocking synchronizations per router step).
  */
 extern "C" __global__ void particle_router_kernel(
     const float* __restrict__ p_in,          // [batch_size, d_head]
@@ -123,6 +124,45 @@ extern "C" __global__ void particle_router_kernel(
     chosen_neighbor[pid] = best_neighbor;
 }
 
+struct RouterDeviceBufferPool {
+    float* d_p_in = nullptr;
+    float* d_p_out = nullptr;
+    float* d_routing_table = nullptr;
+    float* d_gnoise = nullptr;
+    int* d_chosen = nullptr;
+    bool* d_halting = nullptr;
+    ParticleCudaHeader* d_headers = nullptr;
+    size_t batch_cap = 0;
+    size_t rt_cap = 0;
+
+    void ensure_capacity(size_t batch_size, size_t d_head, size_t num_neighbors) {
+        if (batch_size > batch_cap) {
+            if (d_p_in) cudaFree(d_p_in);
+            if (d_p_out) cudaFree(d_p_out);
+            if (d_gnoise) cudaFree(d_gnoise);
+            if (d_chosen) cudaFree(d_chosen);
+            if (d_halting) cudaFree(d_halting);
+            if (d_headers) cudaFree(d_headers);
+
+            batch_cap = batch_size * 2 + 512;
+            cudaMalloc(&d_p_in, batch_cap * d_head * sizeof(float));
+            cudaMalloc(&d_p_out, batch_cap * d_head * sizeof(float));
+            cudaMalloc(&d_gnoise, batch_cap * num_neighbors * sizeof(float));
+            cudaMalloc(&d_chosen, batch_cap * sizeof(int));
+            cudaMalloc(&d_halting, batch_cap * sizeof(bool));
+            cudaMalloc(&d_headers, batch_cap * sizeof(ParticleCudaHeader));
+        }
+        size_t rt_size = d_head * num_neighbors;
+        if (rt_size > rt_cap) {
+            if (d_routing_table) cudaFree(d_routing_table);
+            rt_cap = rt_size * 2 + 1024;
+            cudaMalloc(&d_routing_table, rt_cap * sizeof(float));
+        }
+    }
+};
+
+static thread_local RouterDeviceBufferPool g_router_pool;
+
 // C-FFI Wrapper Function
 extern "C" void launch_particle_router(
     const float* p_in,
@@ -141,11 +181,25 @@ extern "C" void launch_particle_router(
     const ParticleCudaHeader* headers,
     cudaStream_t stream
 ) {
+    if (batch_size <= 0 || d_head <= 0 || num_neighbors <= 0) return;
+
+    g_router_pool.ensure_capacity(batch_size, d_head, num_neighbors);
+
+    if (p_in) cudaMemcpyAsync(g_router_pool.d_p_in, p_in, batch_size * d_head * sizeof(float), cudaMemcpyHostToDevice, stream);
+    if (p_out) cudaMemcpyAsync(g_router_pool.d_p_out, p_out, batch_size * d_head * sizeof(float), cudaMemcpyHostToDevice, stream);
+    if (routing_table) cudaMemcpyAsync(g_router_pool.d_routing_table, routing_table, d_head * num_neighbors * sizeof(float), cudaMemcpyHostToDevice, stream);
+    if (gumbel_noise) cudaMemcpyAsync(g_router_pool.d_gnoise, gumbel_noise, batch_size * num_neighbors * sizeof(float), cudaMemcpyHostToDevice, stream);
+    if (headers) cudaMemcpyAsync(g_router_pool.d_headers, headers, batch_size * sizeof(ParticleCudaHeader), cudaMemcpyHostToDevice, stream);
+
     int threads_per_block = 64;
     int blocks = (batch_size + threads_per_block - 1) / threads_per_block;
 
     particle_router_kernel<<<blocks, threads_per_block, 0, stream>>>(
-        p_in, p_out, routing_table, gumbel_noise, chosen_neighbor, halting_flags,
-        batch_size, d_head, num_neighbors, temperature, epsilon_p, epsilon_h, min_hop, headers
+        g_router_pool.d_p_in, g_router_pool.d_p_out, g_router_pool.d_routing_table,
+        g_router_pool.d_gnoise, g_router_pool.d_chosen, g_router_pool.d_halting,
+        batch_size, d_head, num_neighbors, temperature, epsilon_p, epsilon_h, min_hop, g_router_pool.d_headers
     );
+
+    if (chosen_neighbor) cudaMemcpyAsync(chosen_neighbor, g_router_pool.d_chosen, batch_size * sizeof(int), cudaMemcpyDeviceToHost, stream);
+    if (halting_flags) cudaMemcpyAsync(halting_flags, g_router_pool.d_halting, batch_size * sizeof(bool), cudaMemcpyDeviceToHost, stream);
 }

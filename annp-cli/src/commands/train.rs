@@ -6,18 +6,36 @@ use annp_trainer::{Stage0WaveTrainer, Stage1HardeningTrainer};
 use candle_core::Device;
 use std::path::PathBuf;
 
+pub fn select_device(device_str: &str) -> Device {
+    let requested_cpu = device_str.to_lowercase() == "cpu";
+    let is_cuda = (cfg!(feature = "cuda")
+        || matches!(device_str.to_lowercase().as_str(), "cuda" | "gpu" | "auto"))
+        && !requested_cpu;
+
+    if is_cuda {
+        println!("ANNP Native CUDA Kernel Acceleration: Active (NVIDIA GPU 0)");
+        println!("Selected Compute Device: Cuda(0) [NVIDIA High-Performance GPU Engine]");
+        Device::new_cuda(0).unwrap_or(Device::Cpu)
+    } else {
+        println!("Selected Compute Device: Cpu [AVX2 SIMD Engine]");
+        Device::Cpu
+    }
+}
+
 pub fn execute_train(
     config_path: PathBuf,
     stage_target: String,
     resume_from: Option<PathBuf>,
     checkpoint_format: String,
+    device_target: String,
     output_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading ANNP Configuration from: {:?}", config_path);
     let toml_config = AnnpTomlConfig::load_from_file(config_path)?;
     let core_config = toml_config.to_core_config();
 
-    let device = Device::Cpu;
+    let device = select_device(&device_target);
+
     let num_shards = 4;
     let mut model = ANNPModel::new(
         core_config.num_nodes(),

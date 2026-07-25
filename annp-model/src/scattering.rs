@@ -35,14 +35,15 @@ impl TokenScattering {
             "d_model must equal num_shards * d_head"
         );
 
-        let data = embeddings.to_vec2::<f32>()?;
+        let flat_data = embeddings.flatten_all()?.to_vec1::<f32>()?;
         let mut particles = Vec::with_capacity(seq_len * self.num_shards);
 
         for t in 0..seq_len {
+            let t_offset = t * d_model;
             for shard_i in 0..self.num_shards {
-                let start_idx = shard_i * self.d_head;
+                let start_idx = t_offset + shard_i * self.d_head;
                 let end_idx = start_idx + self.d_head;
-                let payload = data[t][start_idx..end_idx].to_vec();
+                let payload = flat_data[start_idx..end_idx].to_vec();
 
                 let header = ParticleHeader::new(t as u32, shard_i as u16, config.initial_energy);
                 particles.push(Particle::new(header, payload));

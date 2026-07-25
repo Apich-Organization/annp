@@ -33,8 +33,6 @@ pub struct MicroBlockConfig {
     pub lambda_frequency: f32,
     pub eviction_threshold: f32,
     pub pruning_threshold: f32,
-    /// Activation threshold for Midpoint Neurogenesis Node Generation
-    pub neurogenesis_threshold: u64,
     /// Tri-Field dynamics pathology protection parameters
     pub queue_backpressure_alpha: f32,
     pub min_routing_entropy_noise: f32,
@@ -60,8 +58,7 @@ impl Default for MicroBlockConfig {
             lambda_temporal: 0.001,
             lambda_frequency: 0.01,
             eviction_threshold: 1e-4,
-            pruning_threshold: 1e-7, // Ultra-conservative pruning threshold (1e-7)
-            neurogenesis_threshold: 50, // Low threshold encouraging dynamic node generation
+            pruning_threshold: 1e-5,
             queue_backpressure_alpha: 0.05,
             min_routing_entropy_noise: 0.05,
             max_alpha_residual: 0.1,

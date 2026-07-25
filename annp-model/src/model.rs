@@ -14,6 +14,9 @@ pub struct ANNPModel {
     pub topology: TopologyGrid,
     pub serializer: EgressSerializer,
     pub device: Device,
+    // Reusable double-buffer queues for zero-alloc P2P particle routing
+    pub node_queues: Vec<Vec<Particle>>,
+    pub next_queues: Vec<Vec<Particle>>,
 }
 
 impl ANNPModel {
@@ -32,6 +35,9 @@ impl ANNPModel {
             .map(|i| MicroBlockNode::new(i, config.clone(), 64))
             .collect();
 
+        let node_queues = vec![Vec::with_capacity(64); num_nodes];
+        let next_queues = vec![Vec::with_capacity(64); num_nodes];
+
         Self {
             config,
             num_nodes,
@@ -40,6 +46,8 @@ impl ANNPModel {
             topology,
             serializer,
             device,
+            node_queues,
+            next_queues,
         }
     }
 
@@ -57,27 +65,40 @@ impl ANNPModel {
             .scattering
             .scatter_embeddings(embeddings, &self.config)?;
 
-        let mut node_queues: Vec<Vec<Particle>> = vec![Vec::new(); self.num_nodes];
+        // Clear existing queues without dropping capacity
+        for q in self.node_queues.iter_mut() {
+            q.clear();
+        }
+        for q in self.next_queues.iter_mut() {
+            q.clear();
+        }
 
         // Ingress distribution
         let ingress_nodes = &self.scattering.ingress_node_indices;
         for (idx, p) in initial_particles.into_iter().enumerate() {
             let target_ingress = ingress_nodes[idx % ingress_nodes.len()];
-            node_queues[target_ingress].push(p);
+            self.node_queues[target_ingress].push(p);
         }
 
-        let mut halted_particles: Vec<Particle> = Vec::new();
+        let mut halted_particles: Vec<Particle> =
+            Vec::with_capacity(seq_len * self.scattering.num_shards);
         let mut active_loop = true;
         let mut step = 0;
         let max_steps = self.config.max_hop as usize + 20;
 
+        let mut curr_batch: Vec<Particle> = Vec::with_capacity(64);
+
         while active_loop && step < max_steps {
             step += 1;
             active_loop = false;
-            let mut next_queues: Vec<Vec<Particle>> = vec![Vec::new(); self.num_nodes];
+
+            for q in self.next_queues.iter_mut() {
+                q.clear();
+            }
 
             for node_id in 0..self.num_nodes {
-                let mut curr_batch = std::mem::take(&mut node_queues[node_id]);
+                curr_batch.clear();
+                std::mem::swap(&mut curr_batch, &mut self.node_queues[node_id]);
                 if curr_batch.is_empty() {
                     continue;
                 }
@@ -86,29 +107,35 @@ impl ANNPModel {
                 // Process Micro-Block computing
                 self.nodes[node_id].process_batch(&mut curr_batch);
 
-                // Push-routing decision for output particles with Backpressure penalty
-                for p in curr_batch {
+                // Push-routing decision for output particles with P2P Backpressure penalty
+                let neighbors = &self.topology.routing_tables[node_id].neighbors;
+
+                for p in curr_batch.drain(..) {
                     if p.header.halted {
                         halted_particles.push(p);
                     } else {
                         let mut next_hop = self.topology.routing_tables[node_id]
                             .select_next_hop(&p, self.config.temperature);
 
-                        // Backpressure: if candidate target queue is full, overflow to round-robin neighbor
-                        if next_queues[next_hop].len() > 64 {
-                            next_hop = (next_hop + 1) % self.num_nodes;
+                        // P2P Decentralized Backpressure: if candidate target queue is full, overflow to neighbor in local P2P mesh
+                        if self.next_queues[next_hop].len() > 64 {
+                            if !neighbors.is_empty() {
+                                next_hop = neighbors[p.header.hop_count as usize % neighbors.len()];
+                            } else {
+                                next_hop = (next_hop + 1) % self.num_nodes;
+                            }
                         }
-                        next_queues[next_hop].push(p);
+                        self.next_queues[next_hop].push(p);
                     }
                 }
             }
 
-            node_queues = next_queues;
+            std::mem::swap(&mut self.node_queues, &mut self.next_queues);
         }
 
         // Collect any remaining in-flight particles after routing loop completes
-        for q in node_queues {
-            for p in q {
+        for q in self.node_queues.iter_mut() {
+            for p in q.drain(..) {
                 halted_particles.push(p);
             }
         }

@@ -107,10 +107,32 @@ fn main() {
             "cuda/particle_aggregator.cu",
         ];
 
-        // Step 1: Check if NVCC is installed
-        let nvcc_check = Command::new("nvcc").arg("--version").output();
+        // Step 1: Query MSVC toolchain if target_os == windows to locate cl.exe
+        let msvc_tool = if target_env == "msvc" {
+            let target =
+                env::var("TARGET").unwrap_or_else(|_| "x86_64-pc-windows-msvc".to_string());
+            Some(cc::Build::new().target(&target).get_compiler())
+        } else {
+            None
+        };
 
-        if let Ok(output) = nvcc_check {
+        let mut nvcc_check = Command::new("nvcc");
+        nvcc_check.arg("--version");
+        if let Some(tool) = &msvc_tool {
+            for (k, v) in tool.env() {
+                nvcc_check.env(k, v);
+            }
+            if let Some(parent) = tool.path().parent() {
+                let current_path = env::var_os("PATH").unwrap_or_default();
+                let mut new_path = parent.to_path_buf().into_os_string();
+                new_path.push(";");
+                new_path.push(&current_path);
+                nvcc_check.env("PATH", new_path);
+            }
+        }
+        let nvcc_check_res = nvcc_check.output();
+
+        if let Ok(output) = nvcc_check_res {
             if output.status.success() {
                 let obj_ext = if target_os == "windows" { "obj" } else { "o" };
                 let mut obj_files = Vec::new();
@@ -121,6 +143,18 @@ fn main() {
                     let obj_file = out_dir.join(format!("{}.{}", stem, obj_ext));
 
                     let mut compile_cmd = Command::new("nvcc");
+                    if let Some(tool) = &msvc_tool {
+                        for (k, v) in tool.env() {
+                            compile_cmd.env(k, v);
+                        }
+                        if let Some(parent) = tool.path().parent() {
+                            let current_path = env::var_os("PATH").unwrap_or_default();
+                            let mut new_path = parent.to_path_buf().into_os_string();
+                            new_path.push(";");
+                            new_path.push(&current_path);
+                            compile_cmd.env("PATH", new_path);
+                        }
+                    }
                     compile_cmd
                         .arg("-c")
                         .arg("-O3")
@@ -140,6 +174,7 @@ fn main() {
 
                     println!("Cargo NVCC Compile step: {:?}", compile_cmd);
                     let compile_output = compile_cmd.output();
+
                     match compile_output {
                         Ok(out) if out.status.success() => {
                             obj_files.push(obj_file);
@@ -169,6 +204,18 @@ fn main() {
 
                 // Try archiving via nvcc -lib
                 let mut lib_cmd = Command::new("nvcc");
+                if let Some(tool) = &msvc_tool {
+                    for (k, v) in tool.env() {
+                        lib_cmd.env(k, v);
+                    }
+                    if let Some(parent) = tool.path().parent() {
+                        let current_path = env::var_os("PATH").unwrap_or_default();
+                        let mut new_path = parent.to_path_buf().into_os_string();
+                        new_path.push(";");
+                        new_path.push(&current_path);
+                        lib_cmd.env("PATH", new_path);
+                    }
+                }
                 lib_cmd.arg("-lib").arg("-o").arg(&out_lib_path);
                 for obj in &obj_files {
                     lib_cmd.arg(obj);
@@ -189,6 +236,18 @@ fn main() {
                 // Fallback to MSVC lib.exe on Windows if nvcc -lib failed
                 if !lib_success && target_os == "windows" {
                     let mut msvc_lib_cmd = Command::new("lib");
+                    if let Some(tool) = &msvc_tool {
+                        for (k, v) in tool.env() {
+                            msvc_lib_cmd.env(k, v);
+                        }
+                        if let Some(parent) = tool.path().parent() {
+                            let current_path = env::var_os("PATH").unwrap_or_default();
+                            let mut new_path = parent.to_path_buf().into_os_string();
+                            new_path.push(";");
+                            new_path.push(&current_path);
+                            msvc_lib_cmd.env("PATH", new_path);
+                        }
+                    }
                     msvc_lib_cmd.arg(format!("/OUT:{}", out_lib_path.display()));
                     for obj in &obj_files {
                         msvc_lib_cmd.arg(obj);
