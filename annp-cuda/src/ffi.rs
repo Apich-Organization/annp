@@ -1,4 +1,4 @@
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", cuda_available))]
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -11,7 +11,7 @@ pub struct ParticleCudaHeader {
     pub halted: bool,
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", cuda_available))]
 extern "C" {
     pub fn launch_fused_micro_block(
         p_in: *const f32,
@@ -79,7 +79,7 @@ impl CudaMicroBlockRunner {
         alpha: f32,
         sphere_radius: f32,
     ) {
-        #[cfg(feature = "cuda")]
+        #[cfg(any(feature = "cuda", cuda_available))]
         unsafe {
             launch_fused_micro_block(
                 p_in.as_ptr(),
@@ -100,7 +100,7 @@ impl CudaMicroBlockRunner {
             );
         }
 
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(any(feature = "cuda", cuda_available)))]
         {
             // High-performance CPU fallback using std::thread::scope parallelization & SIMD 4-lane vectorization
             if batch_size == 0 {

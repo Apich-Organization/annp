@@ -10,6 +10,7 @@ pub fn execute_train(
     config_path: PathBuf,
     stage_target: String,
     resume_from: Option<PathBuf>,
+    checkpoint_format: String,
     output_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Loading ANNP Configuration from: {:?}", config_path);
@@ -59,6 +60,10 @@ pub fn execute_train(
         "Particle d_head: {}, Total d_model: {}",
         model.config.d_head, d_model
     );
+
+    let use_binary =
+        checkpoint_format.to_lowercase() == "annpb" || checkpoint_format.to_lowercase() == "binary";
+    let file_ext = if use_binary { "annpb" } else { "json" };
 
     for &stg in &stages_to_run {
         if stg < start_stage {
@@ -140,10 +145,14 @@ pub fn execute_train(
                 avg_epoch_loss
             );
 
-            // Save intermediate checkpoint
+            // Save intermediate checkpoint (.annpb binary or .json)
             let ckpt = ModelCheckpoint::extract_from_model(&model, stg, epoch);
-            let ckpt_filename =
-                output_dir.join(format!("checkpoint_stage{}_epoch{}.json", stg, epoch + 1));
+            let ckpt_filename = output_dir.join(format!(
+                "checkpoint_stage{}_epoch{}.{}",
+                stg,
+                epoch + 1,
+                file_ext
+            ));
             ckpt.save(&ckpt_filename)?;
             println!("Saved intermediate checkpoint to: {:?}", ckpt_filename);
         }

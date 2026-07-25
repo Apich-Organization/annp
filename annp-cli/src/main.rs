@@ -23,17 +23,20 @@ enum Commands {
         #[arg(short, long, default_value = "annp_config.toml")]
         output: PathBuf,
     },
-    /// Train ANNP model through 4-stage evolutionary training with loss convergence tracking
+    /// Train ANNP model through 2-stage evolutionary training with loss convergence tracking
     Train {
         /// Configuration TOML path
         #[arg(short, long, default_value = "annp_config.toml")]
         config: PathBuf,
-        /// Target training stage: "0", "1", "2", "3", or "all"
+        /// Target training stage: "0" (exploration), "1" (hardening), or "all"
         #[arg(short, long, default_value = "all")]
         stage: String,
-        /// Optional path to resume training from a checkpoint file
+        /// Optional path to resume training from a checkpoint file (.annpb binary or .json)
         #[arg(short, long)]
         resume_from: Option<PathBuf>,
+        /// Checkpoint format: "annpb" (high-performance binary) or "json"
+        #[arg(short = 'f', long, default_value = "annpb")]
+        format: String,
         /// Directory to save output model checkpoints
         #[arg(short, long, default_value = "checkpoints")]
         output_dir: PathBuf,
@@ -43,12 +46,18 @@ enum Commands {
         /// Configuration TOML path
         #[arg(short, long, default_value = "annp_config.toml")]
         config: PathBuf,
-        /// Optional checkpoint path to load trained model weights
+        /// Optional checkpoint path (.annpb binary or .json) to load trained model weights
         #[arg(short = 'k', long)]
         checkpoint: Option<PathBuf>,
-        /// Optional input string / token sequence
+        /// Optional input vector / token sequence
         #[arg(short, long)]
         input: Option<String>,
+        /// Runtime routing temperature override (\tau > 0)
+        #[arg(short = 't', long)]
+        temperature: Option<f32>,
+        /// Save output sequence tensor to binary file (.annpb)
+        #[arg(short = 's', long)]
+        save_output: Option<PathBuf>,
         /// Enable high-throughput particle processing benchmark
         #[arg(short, long)]
         benchmark: bool,
@@ -74,14 +83,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             stage,
             resume_from,
+            format,
             output_dir,
-        } => execute_train(config, stage, resume_from, output_dir)?,
+        } => execute_train(config, stage, resume_from, format, output_dir)?,
         Commands::Run {
             config,
             checkpoint,
             input,
+            temperature,
+            save_output,
             benchmark,
-        } => execute_run(config, checkpoint, input, benchmark)?,
+        } => execute_run(
+            config,
+            checkpoint,
+            input,
+            temperature,
+            save_output,
+            benchmark,
+        )?,
         Commands::Export { checkpoint, out } => execute_export(checkpoint, out)?,
     }
 

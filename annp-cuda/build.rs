@@ -88,6 +88,7 @@ fn find_cuda_lib_dir(target_os: &str) -> Option<PathBuf> {
 }
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(cuda_available)");
     println!("cargo:rerun-if-changed=cuda/common.cuh");
     println!("cargo:rerun-if-changed=cuda/micro_block_fused.cu");
     println!("cargo:rerun-if-changed=cuda/particle_router.cu");
@@ -221,6 +222,8 @@ fn main() {
                     println!("cargo:rustc-link-search=native={}", out_dir.display());
                     println!("cargo:rustc-link-lib=static=annp_cuda");
                     println!("cargo:rustc-link-lib=cudart");
+                    println!("cargo:rustc-cfg=cuda_available");
+                    println!("cargo:rustc-cfg=feature=\"cuda\"");
                     return;
                 }
             }
