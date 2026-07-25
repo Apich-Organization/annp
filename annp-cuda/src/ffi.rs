@@ -117,7 +117,9 @@ impl CudaMicroBlockRunner {
                         let k_slice = &k_cache[k * d_head..(k + 1) * d_head];
                         let dot: f32 = curr_p.iter().zip(k_slice.iter()).map(|(x, y)| x * y).sum();
                         let s = dot * scale;
-                        if s > max_score { max_score = s; }
+                        if s > max_score {
+                            max_score = s;
+                        }
                         scores.push(s);
                     }
                     let mut sum_exp = 0.0f32;
@@ -151,7 +153,9 @@ impl CudaMicroBlockRunner {
                     }
                     let norm = (sq + 1e-8).sqrt();
                     let s = sphere_radius / norm;
-                    for d in 0..d_head { s_mid[d] *= s; }
+                    for d in 0..d_head {
+                        s_mid[d] *= s;
+                    }
                 }
 
                 // 3. SwiGLU FFN

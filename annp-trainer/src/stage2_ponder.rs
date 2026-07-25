@@ -12,7 +12,11 @@ impl Stage2PonderTrainer {
         Self { lambda_ponder }
     }
 
-    pub fn train_step(&mut self, model: &mut ANNPModel, input_embeddings: &Tensor) -> Result<(f32, f32)> {
+    pub fn train_step(
+        &mut self,
+        model: &mut ANNPModel,
+        input_embeddings: &Tensor,
+    ) -> Result<(f32, f32)> {
         let output = model.forward(input_embeddings)?;
         let task_loss = output.sqr()?.mean_all()?.to_scalar::<f32>()?;
 

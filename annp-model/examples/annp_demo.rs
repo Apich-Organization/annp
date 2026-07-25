@@ -1,6 +1,8 @@
 use annp_core::{MicroBlockConfig, NormStrategy};
 use annp_model::ANNPModel;
-use annp_trainer::{Stage0WaveTrainer, Stage1RouterTrainer, Stage2PonderTrainer, Stage3ContinualTrainer};
+use annp_trainer::{
+    Stage0WaveTrainer, Stage1RouterTrainer, Stage2PonderTrainer, Stage3ContinualTrainer,
+};
 use candle_core::{Device, Tensor};
 
 fn main() -> candle_core::Result<()> {
@@ -30,11 +32,17 @@ fn main() -> candle_core::Result<()> {
     let d_model = num_shards * 64;
     let input_embeddings = Tensor::randn(0.0f32, 1.0f32, (seq_len, d_model), &device)?;
 
-    println!("Input Sequence Tensor Shape: {:?}", input_embeddings.shape());
+    println!(
+        "Input Sequence Tensor Shape: {:?}",
+        input_embeddings.shape()
+    );
 
     // Forward Pass Demonstration
     let output_embeddings = model.forward(&input_embeddings)?;
-    println!("Output Sequence Tensor Shape: {:?}", output_embeddings.shape());
+    println!(
+        "Output Sequence Tensor Shape: {:?}",
+        output_embeddings.shape()
+    );
 
     println!("\n=== Running 4-Stage Evolutionary Trainer Demonstration ===");
 
@@ -51,12 +59,18 @@ fn main() -> candle_core::Result<()> {
     // Stage 2: Energy Settling & Pondering Cost
     let mut stage2 = Stage2PonderTrainer::new(0.01);
     let (loss2, avg_hops) = stage2.train_step(&mut model, &input_embeddings)?;
-    println!("[Stage 2: Energy Settling] Loss: {:.6}, Avg Hops: {:.2}", loss2, avg_hops);
+    println!(
+        "[Stage 2: Energy Settling] Loss: {:.6}, Avg Hops: {:.2}",
+        loss2, avg_hops
+    );
 
     // Stage 3: Continual Evolution & Plastic Hardening
     let stage3 = Stage3ContinualTrainer::new(1e-3, 0.001, 1.5);
     stage3.apply_plastic_hardening(&mut model);
-    println!("[Stage 3: Plastic Hardening] Applied to all {} Micro-Block nodes.", model.num_nodes);
+    println!(
+        "[Stage 3: Plastic Hardening] Applied to all {} Micro-Block nodes.",
+        model.num_nodes
+    );
 
     println!("\nANNP PoC Pipeline successfully executed with industrial standards!");
     use std::io::Write;

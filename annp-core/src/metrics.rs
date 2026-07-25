@@ -2,8 +2,14 @@
 
 /// Compute L2 norm difference between input and output particle payloads: ||p_out - p_in||_2
 pub fn compute_delta_p(p_in: &[f32], p_out: &[f32]) -> f32 {
-    assert_eq!(p_in.len(), p_out.len(), "Particle dimension mismatch in delta_p computation");
-    let sum_sq: f32 = p_in.iter().zip(p_out.iter())
+    assert_eq!(
+        p_in.len(),
+        p_out.len(),
+        "Particle dimension mismatch in delta_p computation"
+    );
+    let sum_sq: f32 = p_in
+        .iter()
+        .zip(p_out.iter())
         .map(|(&x, &y)| {
             let diff = y - x;
             diff * diff

@@ -46,7 +46,9 @@ impl ANNPModel {
     /// Forward pass through ANNP P2P Mesh with lock-free asynchronous particle routing
     pub fn forward(&mut self, embeddings: &Tensor) -> Result<Tensor> {
         let (seq_len, _) = embeddings.dims2()?;
-        let initial_particles = self.scattering.scatter_embeddings(embeddings, &self.config)?;
+        let initial_particles = self
+            .scattering
+            .scatter_embeddings(embeddings, &self.config)?;
 
         let mut node_queues: Vec<Vec<Particle>> = vec![Vec::new(); self.num_nodes];
 
@@ -93,6 +95,7 @@ impl ANNPModel {
         }
 
         // Serializer reconstruction
-        self.serializer.reconstruct_sequence(seq_len, &halted_particles, &self.device)
+        self.serializer
+            .reconstruct_sequence(seq_len, &halted_particles, &self.device)
     }
 }

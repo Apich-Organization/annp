@@ -1,4 +1,6 @@
-use annp_core::{compute_attention_entropy, compute_delta_p, MicroBlockConfig, NormStrategy, Particle};
+use annp_core::{
+    compute_attention_entropy, compute_delta_p, MicroBlockConfig, NormStrategy, Particle,
+};
 use annp_cuda::CudaMicroBlockRunner;
 use rand::Rng;
 
@@ -29,9 +31,15 @@ impl MicroBlockNode {
         let mut rng = rand::thread_rng();
         let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
 
-        let w_gate = (0..d_head * ffn_dim).map(|_| rng.gen_range(-scale..scale)).collect();
-        let w_up = (0..d_head * ffn_dim).map(|_| rng.gen_range(-scale..scale)).collect();
-        let w_down = (0..ffn_dim * d_head).map(|_| rng.gen_range(-scale..scale)).collect();
+        let w_gate = (0..d_head * ffn_dim)
+            .map(|_| rng.gen_range(-scale..scale))
+            .collect();
+        let w_up = (0..d_head * ffn_dim)
+            .map(|_| rng.gen_range(-scale..scale))
+            .collect();
+        let w_down = (0..ffn_dim * d_head)
+            .map(|_| rng.gen_range(-scale..scale))
+            .collect();
 
         Self {
             node_id,

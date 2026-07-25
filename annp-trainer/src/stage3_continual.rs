@@ -1,5 +1,5 @@
 use annp_core::MicroBlockConfig;
-use annp_model::{MicroBlockNode, ANNPModel};
+use annp_model::{ANNPModel, MicroBlockNode};
 use rand::Rng;
 
 /// Stage 3: Autonomous Continual Evolution & Plastic Hardening.

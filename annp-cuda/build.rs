@@ -12,20 +12,19 @@ fn main() {
 
     if cuda_enabled {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-        
+
         let cu_files = vec![
             "cuda/micro_block_fused.cu",
             "cuda/particle_router.cu",
             "cuda/particle_aggregator.cu",
         ];
 
-        let nvcc_status = Command::new("nvcc")
-            .arg("--version")
-            .status();
+        let nvcc_status = Command::new("nvcc").arg("--version").status();
 
         if let Ok(status) = nvcc_status {
             if status.success() {
                 let mut builder = cc::Build::new();
+                #[cfg(unix)]
                 builder
                     .cuda(true)
                     .flag("-O3")
@@ -34,7 +33,21 @@ fn main() {
                     .flag("-arch=sm_80") // Default targeting Ampere / Hopper architecture
                     .files(cu_files);
 
+                #[cfg(windows)]
+                builder
+                    .cuda(true)
+                    .flag("-O3")
+                    .flag("-allow-unsupported-compiler")
+                    .flag("-std=c++17")
+                    .flag("--use_fast_math")
+                    .flag("-arch=sm_80") // Default targeting Ampere / Hopper architecture
+                    .files(cu_files);
+
+                #[cfg(unix)]
                 builder.compile("libannp_cuda.a");
+
+                #[cfg(windows)]
+                builder.compile("libannp_cuda.lib");
 
                 println!("cargo:rustc-link-search=native={}", out_dir.display());
                 println!("cargo:rustc-link-lib=static=annp_cuda");
