@@ -1,9 +1,8 @@
 #include "common.cuh"
 
 /**
- * CUDA Aggregator & Prefetching Ring Buffer Kernel.
- * Collects scattered particles from incoming streams, aligns memory addresses
- * into contiguous 128-byte aligned GPU payload buffers to ensure maximum memory bandwidth.
+ * Industrial-Standard Vectorized CUDA Aggregator & Prefetching Ring Buffer Kernel.
+ * Uses 128-bit float4 instructions to maximize memory bandwidth during particle prefetching and aggregation.
  */
 extern "C" __global__ void particle_prefetch_aggregate_kernel(
     const float* __restrict__ src_particles,  // Scattered input particles [N, d_head]
@@ -19,10 +18,8 @@ extern "C" __global__ void particle_prefetch_aggregate_kernel(
     const float* src_ptr = src_particles + src_idx * d_head;
     float* dst_ptr = dst_buffer + idx * d_head;
 
-    // Vectorized 128-bit memory copy when d_head is multiple of 4 floats (16 bytes)
-    for (int d = 0; d < d_head; ++d) {
-        dst_ptr[d] = src_ptr[d];
-    }
+    // Vectorized 128-bit memory copy (16 bytes per float4 instruction)
+    copy_float4(dst_ptr, src_ptr, d_head);
 }
 
 // C-FFI Wrapper Function
