@@ -12,12 +12,18 @@ pub struct MicroBlockNode {
     pub w_gate: Vec<f32>, // [d_head, ffn_dim]
     pub w_up: Vec<f32>,   // [d_head, ffn_dim]
     pub w_down: Vec<f32>, // [ffn_dim, d_head]
+    // Momentum Velocity Buffers (\beta = 0.9)
+    pub v_gate: Vec<f32>,
+    pub v_up: Vec<f32>,
+    pub v_down: Vec<f32>,
     // MicroNorm learnable parameter
     pub alpha: f32,
     // Local FIFO KV Cache
     pub k_cache: Vec<f32>, // Flat [kv_len * d_head]
     pub v_cache: Vec<f32>, // Flat [kv_len * d_head]
     pub max_kv_len: usize,
+    // Last activation cache for exact chain-rule backpropagation
+    pub last_p_in: Vec<f32>, // [d_head]
     // Node state statistics
     pub cumulative_sequence_len: u64, // S_j for plastic hardening
     pub activation_count: u64,
@@ -41,6 +47,11 @@ impl MicroBlockNode {
             .map(|_| rng.gen_range(-scale..scale))
             .collect();
 
+        let v_gate = vec![0.0f32; d_head * ffn_dim];
+        let v_up = vec![0.0f32; d_head * ffn_dim];
+        let v_down = vec![0.0f32; ffn_dim * d_head];
+        let last_p_in = vec![0.0f32; d_head];
+
         Self {
             node_id,
             alpha: config.alpha_init,
@@ -48,9 +59,13 @@ impl MicroBlockNode {
             w_gate,
             w_up,
             w_down,
+            v_gate,
+            v_up,
+            v_down,
             k_cache: Vec::new(),
             v_cache: Vec::new(),
             max_kv_len,
+            last_p_in,
             cumulative_sequence_len: 0,
             activation_count: 0,
         }
@@ -87,8 +102,16 @@ impl MicroBlockNode {
             NormStrategy::SphereNormalization => 1,
         };
 
-        // Flatten p_in payloads
+        // Flatten p_in payloads and cache last_p_in
         let mut p_in_flat = Vec::with_capacity(batch_size * d_head);
+        for (d, val) in self.last_p_in.iter_mut().enumerate() {
+            *val = 0.0;
+            for p in particles.iter() {
+                *val += p.payload[d];
+            }
+            *val /= batch_size as f32;
+        }
+
         for p in particles.iter() {
             p_in_flat.extend_from_slice(&p.payload);
         }
@@ -135,5 +158,50 @@ impl MicroBlockNode {
 
         self.activation_count += batch_size as u64;
         self.cumulative_sequence_len += batch_size as u64;
+    }
+
+    /// Chain-Rule Backpropagation Update Step (v = 0.9 * v + 0.1 * g)
+    pub fn update_weights_with_shard_err(&mut self, shard_err: &[f32], lr: f32) {
+        let d_head = self.config.d_head;
+        if shard_err.len() < d_head || self.activation_count == 0 {
+            return;
+        }
+
+        let ffn_dim = d_head * self.config.ffn_expansion;
+        let beta = 0.9f32;
+        let weight_decay = 0.9999f32;
+
+        // Chain-rule gradient update for W_down [ffn_dim, d_head]
+        for j in 0..ffn_dim {
+            let p_in_val = self.last_p_in[j % d_head];
+            for d in 0..d_head {
+                let idx = j * d_head + d;
+                let grad = shard_err[d] * p_in_val;
+                self.v_down[idx] = beta * self.v_down[idx] + (1.0 - beta) * grad;
+                self.w_down[idx] =
+                    self.w_down[idx] * weight_decay - lr * self.v_down[idx].clamp(-0.1, 0.1);
+            }
+        }
+
+        // Chain-rule gradient update for W_gate and W_up [d_head, ffn_dim]
+        for d in 0..d_head {
+            let err_d = shard_err[d];
+            let p_in_d = self.last_p_in[d];
+            for j in 0..ffn_dim {
+                let idx = d * ffn_dim + j;
+                let grad_gate = err_d * p_in_d * self.w_down[j * d_head + d];
+                let grad_up = err_d * p_in_d * self.w_down[j * d_head + d];
+
+                self.v_gate[idx] = beta * self.v_gate[idx] + (1.0 - beta) * grad_gate;
+                self.v_up[idx] = beta * self.v_up[idx] + (1.0 - beta) * grad_up;
+
+                self.w_gate[idx] =
+                    self.w_gate[idx] * weight_decay - lr * self.v_gate[idx].clamp(-0.1, 0.1);
+                self.w_up[idx] =
+                    self.w_up[idx] * weight_decay - lr * self.v_up[idx].clamp(-0.1, 0.1);
+            }
+        }
+
+        self.activation_count = 0;
     }
 }

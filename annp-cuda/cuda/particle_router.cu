@@ -89,8 +89,11 @@ extern "C" __global__ void particle_router_kernel(
 
     float entropy = 0.0f;
     float inv_sum = 1.0f / (sum_exp + 1e-8f);
+    float noise_base = 0.05f / (float)num_neighbors;
+
     for (int k = 0; k < num_neighbors; ++k) {
-        probs[k] *= inv_sum;
+        float raw_prob = probs[k] * inv_sum;
+        probs[k] = 0.95f * raw_prob + noise_base;
         if (probs[k] > 1e-10f) {
             entropy -= probs[k] * log2f(probs[k] + 1e-10f);
         }

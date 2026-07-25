@@ -51,7 +51,11 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
 }
 
 fn parse_value_to_tensor(val: &Value, d_model: usize, device: &Device) -> Result<Option<Tensor>> {
-    if let Some(array) = val.get("embeddings").or_else(|| val.get("tokens")).and_then(|v| v.as_array()) {
+    if let Some(array) = val
+        .get("embeddings")
+        .or_else(|| val.get("tokens"))
+        .and_then(|v| v.as_array())
+    {
         let mut flat = Vec::new();
         let mut seq_len = 0;
 

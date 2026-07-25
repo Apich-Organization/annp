@@ -2,14 +2,14 @@ use annp_core::MicroBlockConfig;
 use annp_model::{ANNPModel, MicroBlockNode};
 use rand::Rng;
 
-/// Stage 3: Autonomous Continual Evolution & Plastic Hardening.
-pub struct Stage3ContinualTrainer {
+/// Stage 1: Plasticity Hardening & Precision Fine-Tuning.
+pub struct Stage1HardeningTrainer {
     pub eta_0: f32,
     pub beta: f32,
     pub theta: f32,
 }
 
-impl Stage3ContinualTrainer {
+impl Stage1HardeningTrainer {
     pub fn new(eta_0: f32, beta: f32, theta: f32) -> Self {
         Self { eta_0, beta, theta }
     }
@@ -61,7 +61,6 @@ impl Stage3ContinualTrainer {
     pub fn apply_plastic_hardening(&self, model: &mut ANNPModel) {
         for node in model.nodes.iter_mut() {
             let node_lr = self.compute_node_lr(node.cumulative_sequence_len);
-            // Apply gradient scaling proportional to node_lr / eta_0
             let scaling = node_lr / self.eta_0;
             node.alpha *= scaling;
         }

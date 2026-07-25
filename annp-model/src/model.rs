@@ -43,8 +43,15 @@ impl ANNPModel {
         }
     }
 
-    /// Forward pass through ANNP P2P Mesh with lock-free asynchronous particle routing
+    /// Forward pass through ANNP P2P Mesh with batch-wise state reset and lock-free asynchronous particle routing
     pub fn forward(&mut self, embeddings: &Tensor) -> Result<Tensor> {
+        // Reset node KV Caches before each forward batch to prevent cross-batch historical state pollution
+        for node in self.nodes.iter_mut() {
+            node.k_cache.clear();
+            node.v_cache.clear();
+            node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
+        }
+
         let (seq_len, _) = embeddings.dims2()?;
         let initial_particles = self
             .scattering
@@ -79,19 +86,31 @@ impl ANNPModel {
                 // Process Micro-Block computing
                 self.nodes[node_id].process_batch(&mut curr_batch);
 
-                // Push-routing decision for output particles
+                // Push-routing decision for output particles with Backpressure penalty
                 for p in curr_batch {
                     if p.header.halted {
                         halted_particles.push(p);
                     } else {
-                        let next_hop = self.topology.routing_tables[node_id]
+                        let mut next_hop = self.topology.routing_tables[node_id]
                             .select_next_hop(&p, self.config.temperature);
+
+                        // Backpressure: if candidate target queue is full, overflow to round-robin neighbor
+                        if next_queues[next_hop].len() > 64 {
+                            next_hop = (next_hop + 1) % self.num_nodes;
+                        }
                         next_queues[next_hop].push(p);
                     }
                 }
             }
 
             node_queues = next_queues;
+        }
+
+        // Collect any remaining in-flight particles after routing loop completes
+        for q in node_queues {
+            for p in q {
+                halted_particles.push(p);
+            }
         }
 
         // Serializer reconstruction

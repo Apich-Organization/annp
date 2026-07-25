@@ -9,9 +9,7 @@ pub struct AnnpTomlConfig {
     pub model: ModelSection,
     pub eviction: EvictionSection,
     pub stage0_wave: StageConfig,
-    pub stage1_router: StageConfig,
-    pub stage2_ponder: StageConfig,
-    pub stage3_continual: StageConfig,
+    pub stage1_hardening: StageConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +43,7 @@ pub struct StageConfig {
     pub epochs: usize,
     pub learning_rate: f32,
     pub dataset_path: Option<String>,
-    pub dataset_format: Option<String>, // "json", "jsonl", "csv", "sqlite"
+    pub dataset_format: Option<String>,
 }
 
 impl Default for AnnpTomlConfig {
@@ -57,8 +55,8 @@ impl Default for AnnpTomlConfig {
                 d_head: 64,
                 ffn_expansion: 8,
                 initial_energy: 1.0,
-                max_hop: 200,
-                min_hop: 10,
+                max_hop: 100,
+                min_hop: 3,
                 epsilon_p: 1e-4,
                 epsilon_h: 0.05,
                 temperature: 1.0,
@@ -74,31 +72,17 @@ impl Default for AnnpTomlConfig {
             },
             stage0_wave: StageConfig {
                 enabled: true,
-                epochs: 5,
-                learning_rate: 1e-3,
-                dataset_path: Some("data/stage0.jsonl".to_string()),
-                dataset_format: Some("jsonl".to_string()),
+                epochs: 8,
+                learning_rate: 0.02,
+                dataset_path: Some("synthetic".to_string()),
+                dataset_format: Some("synthetic".to_string()),
             },
-            stage1_router: StageConfig {
+            stage1_hardening: StageConfig {
                 enabled: true,
-                epochs: 5,
-                learning_rate: 1e-3,
-                dataset_path: Some("data/stage1.csv".to_string()),
-                dataset_format: Some("csv".to_string()),
-            },
-            stage2_ponder: StageConfig {
-                enabled: true,
-                epochs: 5,
-                learning_rate: 1e-3,
-                dataset_path: Some("data/stage2.db".to_string()),
-                dataset_format: Some("sqlite".to_string()),
-            },
-            stage3_continual: StageConfig {
-                enabled: true,
-                epochs: 5,
-                learning_rate: 1e-3,
-                dataset_path: Some("data/stage3.json".to_string()),
-                dataset_format: Some("json".to_string()),
+                epochs: 15,
+                learning_rate: 0.02,
+                dataset_path: Some("synthetic".to_string()),
+                dataset_format: Some("synthetic".to_string()),
             },
         }
     }
@@ -142,6 +126,9 @@ impl AnnpTomlConfig {
             lambda_frequency: self.eviction.lambda_frequency,
             eviction_threshold: self.eviction.eviction_threshold,
             pruning_threshold: self.eviction.pruning_threshold,
+            queue_backpressure_alpha: 0.05,
+            min_routing_entropy_noise: 0.05,
+            max_alpha_residual: 0.1,
         }
     }
 }

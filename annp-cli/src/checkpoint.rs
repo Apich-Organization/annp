@@ -55,7 +55,11 @@ impl ModelCheckpoint {
         model.topology.routing_tables = self.routing_tables.clone();
     }
 
-    pub fn extract_from_model(model: &ANNPModel, stage_completed: usize, epoch_completed: usize) -> Self {
+    pub fn extract_from_model(
+        model: &ANNPModel,
+        stage_completed: usize,
+        epoch_completed: usize,
+    ) -> Self {
         let nodes = model
             .nodes
             .iter()

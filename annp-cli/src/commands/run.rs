@@ -17,7 +17,12 @@ pub fn execute_run(
 
     let device = Device::Cpu;
     let num_shards = 4;
-    let mut model = ANNPModel::new(core_config.num_nodes(), num_shards, core_config, device.clone());
+    let mut model = ANNPModel::new(
+        core_config.num_nodes(),
+        num_shards,
+        core_config,
+        device.clone(),
+    );
 
     if let Some(ckpt_path) = checkpoint_path {
         println!("Loading Checkpoint: {:?}", ckpt_path);
@@ -30,7 +35,10 @@ pub fn execute_run(
     let input_tensor = Tensor::randn(0.0f32, 1.0f32, (seq_len, d_model), &device)?;
 
     println!("\n=== Executing ANNP Model Inference Pass ===");
-    println!("Input Prompt/Vector Tensor Shape: {:?}", input_tensor.shape());
+    println!(
+        "Input Prompt/Vector Tensor Shape: {:?}",
+        input_tensor.shape()
+    );
 
     let iterations = if benchmark { 50 } else { 1 };
     let start_time = Instant::now();
@@ -49,11 +57,23 @@ pub fn execute_run(
     if benchmark {
         println!("\n=== ANNP High-Throughput Performance Benchmark ===");
         println!("Iterations Executed: {}", iterations);
-        println!("Total Processing Time: {:.4} seconds", elapsed.as_secs_f64());
+        println!(
+            "Total Processing Time: {:.4} seconds",
+            elapsed.as_secs_f64()
+        );
         println!("Particles Processed: {}", total_particles_processed);
-        println!("Particle Throughput: {:.2} particles/sec", particles_per_sec);
-        println!("Average Latency per Pass: {:.4} ms", (elapsed.as_secs_f64() * 1000.0) / iterations as f64);
-        println!("Memory Overhead per Node: ~{:.2} KB", (model.config.d_head * 4 * 16) as f64 / 1024.0);
+        println!(
+            "Particle Throughput: {:.2} particles/sec",
+            particles_per_sec
+        );
+        println!(
+            "Average Latency per Pass: {:.4} ms",
+            (elapsed.as_secs_f64() * 1000.0) / iterations as f64
+        );
+        println!(
+            "Memory Overhead per Node: ~{:.2} KB",
+            (model.config.d_head * 4 * 16) as f64 / 1024.0
+        );
     }
 
     Ok(())

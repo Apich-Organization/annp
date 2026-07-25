@@ -32,7 +32,11 @@ fn find_cuda_lib_dir(target_os: &str) -> Option<PathBuf> {
     }
 
     // 3. Deduce from nvcc binary location via system path lookup
-    let where_cmd = if target_os == "windows" { "where" } else { "which" };
+    let where_cmd = if target_os == "windows" {
+        "where"
+    } else {
+        "which"
+    };
     if let Ok(where_out) = Command::new(where_cmd).arg("nvcc").output() {
         if where_out.status.success() {
             let path_str = String::from_utf8_lossy(&where_out.stdout);
@@ -68,7 +72,11 @@ fn find_cuda_lib_dir(target_os: &str) -> Option<PathBuf> {
             }
         }
     } else {
-        for candidate in &["/usr/local/cuda/lib64", "/usr/local/cuda/lib", "/usr/lib/x86_64-linux-gnu"] {
+        for candidate in &[
+            "/usr/local/cuda/lib64",
+            "/usr/local/cuda/lib",
+            "/usr/lib/x86_64-linux-gnu",
+        ] {
             let p = PathBuf::from(candidate);
             if p.exists() {
                 return Some(p);
@@ -130,19 +138,27 @@ fn main() {
                     compile_cmd.arg(cu_file);
 
                     println!("Cargo NVCC Compile step: {:?}", compile_cmd);
-                    let status = compile_cmd.status();
-                    match status {
-                        Ok(s) if s.success() => {
+                    let compile_output = compile_cmd.output();
+                    match compile_output {
+                        Ok(out) if out.status.success() => {
                             obj_files.push(obj_file);
                         }
-                        _ => {
-                            println!("cargo:warning=Failed to compile CUDA file {}", cu_file);
+                        Ok(out) => {
+                            println!(
+                                "cargo:warning=NVCC compile error for {}: {}",
+                                cu_file,
+                                String::from_utf8_lossy(&out.stderr)
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            println!("cargo:warning=Failed to execute NVCC: {}", e);
                             return;
                         }
                     }
                 }
 
-                // Step 3: Package object files into a static library via nvcc -lib
+                // Step 3: Package object files into static library
                 let lib_name = if target_os == "windows" {
                     "annp_cuda.lib"
                 } else {
@@ -150,25 +166,62 @@ fn main() {
                 };
                 let out_lib_path = out_dir.join(lib_name);
 
+                // Try archiving via nvcc -lib
                 let mut lib_cmd = Command::new("nvcc");
                 lib_cmd.arg("-lib").arg("-o").arg(&out_lib_path);
                 for obj in &obj_files {
                     lib_cmd.arg(obj);
                 }
 
-                println!("Cargo NVCC Lib step: {:?}", lib_cmd);
-                if let Ok(lib_status) = lib_cmd.status() {
-                    if lib_status.success() {
-                        // Auto-detect CUDA toolkit library path for cudart.lib / libcudart.so
-                        if let Some(cuda_lib_dir) = find_cuda_lib_dir(&target_os) {
-                            println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
-                        }
-
-                        println!("cargo:rustc-link-search=native={}", out_dir.display());
-                        println!("cargo:rustc-link-lib=static=annp_cuda");
-                        println!("cargo:rustc-link-lib=cudart");
-                        return;
+                let mut lib_success = false;
+                if let Ok(lib_out) = lib_cmd.output() {
+                    if lib_out.status.success() {
+                        lib_success = true;
+                    } else {
+                        println!(
+                            "cargo:warning=nvcc -lib warning/error: {}",
+                            String::from_utf8_lossy(&lib_out.stderr)
+                        );
                     }
+                }
+
+                // Fallback to MSVC lib.exe on Windows if nvcc -lib failed
+                if !lib_success && target_os == "windows" {
+                    let mut msvc_lib_cmd = Command::new("lib");
+                    msvc_lib_cmd.arg(format!("/OUT:{}", out_lib_path.display()));
+                    for obj in &obj_files {
+                        msvc_lib_cmd.arg(obj);
+                    }
+                    if let Ok(msvc_out) = msvc_lib_cmd.output() {
+                        if msvc_out.status.success() {
+                            lib_success = true;
+                        }
+                    }
+                }
+
+                // Fallback to ar on Linux/Unix if nvcc -lib failed
+                if !lib_success && target_os != "windows" {
+                    let mut ar_cmd = Command::new("ar");
+                    ar_cmd.arg("rcs").arg(&out_lib_path);
+                    for obj in &obj_files {
+                        ar_cmd.arg(obj);
+                    }
+                    if let Ok(ar_out) = ar_cmd.output() {
+                        if ar_out.status.success() {
+                            lib_success = true;
+                        }
+                    }
+                }
+
+                if lib_success {
+                    if let Some(cuda_lib_dir) = find_cuda_lib_dir(&target_os) {
+                        println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
+                    }
+
+                    println!("cargo:rustc-link-search=native={}", out_dir.display());
+                    println!("cargo:rustc-link-lib=static=annp_cuda");
+                    println!("cargo:rustc-link-lib=cudart");
+                    return;
                 }
             }
         }

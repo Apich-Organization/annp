@@ -15,6 +15,10 @@ pub fn execute_export(
     }
     fs::write(&topology_out, json_content)?;
 
-    println!("Successfully exported P2P Routing Topology for {} nodes to: {:?}", ckpt.routing_tables.len(), topology_out);
+    println!(
+        "Successfully exported P2P Routing Topology for {} nodes to: {:?}",
+        ckpt.routing_tables.len(),
+        topology_out
+    );
     Ok(())
 }

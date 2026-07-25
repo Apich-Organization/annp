@@ -1,8 +1,6 @@
 use annp_core::{MicroBlockConfig, NormStrategy};
 use annp_model::ANNPModel;
-use annp_trainer::{
-    Stage0WaveTrainer, Stage1RouterTrainer, Stage2PonderTrainer, Stage3ContinualTrainer,
-};
+use annp_trainer::{Stage0WaveTrainer, Stage1HardeningTrainer};
 use candle_core::{Device, Tensor};
 
 fn main() -> candle_core::Result<()> {
@@ -27,6 +25,9 @@ fn main() -> candle_core::Result<()> {
         lambda_frequency: 0.01,
         eviction_threshold: 1e-4,
         pruning_threshold: 1e-5,
+        queue_backpressure_alpha: 0.05,
+        min_routing_entropy_noise: 0.05,
+        max_alpha_residual: 0.1,
     };
 
     let device = Device::Cpu;
@@ -49,35 +50,22 @@ fn main() -> candle_core::Result<()> {
         output_embeddings.shape()
     );
 
-    println!("\n=== Running 4-Stage Evolutionary Trainer Demonstration ===");
+    println!("\n=== Running Streamlined 2-Stage Evolutionary Trainer Demonstration ===");
 
-    // Stage 0: Global Wave Pre-training
+    // Stage 0: Global Wave Exploration
     let mut stage0 = Stage0WaveTrainer::new(1e-3);
     let loss0 = stage0.train_step(&mut model, &input_embeddings)?;
-    println!("[Stage 0: Wave Pre-training] Loss: {:.6}", loss0);
+    println!("[Stage 0: Global Wave Exploration] Loss: {:.6}", loss0);
 
-    // Stage 1: Router Auto-organization
-    let mut stage1 = Stage1RouterTrainer::new(0.8, 0.05);
-    let loss1 = stage1.train_step(&mut model, &input_embeddings)?;
-    println!("[Stage 1: Router Auto-org] Loss: {:.6}", loss1);
-
-    // Stage 2: Energy Settling & Pondering Cost
-    let mut stage2 = Stage2PonderTrainer::new(0.01);
-    let (loss2, avg_hops) = stage2.train_step(&mut model, &input_embeddings)?;
+    // Stage 1: Plastic Hardening & Precision Fine-Tuning
+    let stage1 = Stage1HardeningTrainer::new(1e-3, 0.001, 1.5);
+    stage1.apply_plastic_hardening(&mut model);
     println!(
-        "[Stage 2: Energy Settling] Loss: {:.6}, Avg Hops: {:.2}",
-        loss2, avg_hops
-    );
-
-    // Stage 3: Continual Evolution & Plastic Hardening
-    let stage3 = Stage3ContinualTrainer::new(1e-3, 0.001, 1.5);
-    stage3.apply_plastic_hardening(&mut model);
-    println!(
-        "[Stage 3: Plastic Hardening] Applied to all {} Micro-Block nodes.",
+        "[Stage 1: Plastic Hardening] Applied to all {} Micro-Block nodes.",
         model.num_nodes
     );
 
-    println!("\nANNP PoC Pipeline successfully executed with industrial standards!");
+    println!("\nANNP Streamlined Pipeline successfully executed with industrial standards!");
     use std::io::Write;
     std::io::stdout().flush().unwrap();
     Ok(())
