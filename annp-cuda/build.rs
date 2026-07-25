@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -21,41 +21,67 @@ fn main() {
             "cuda/particle_aggregator.cu",
         ];
 
-        let nvcc_check = Command::new("nvcc").arg("--version").status();
+        // Step 1: Check if NVCC is installed
+        let nvcc_check = Command::new("nvcc").arg("--version").output();
 
-        if let Ok(status) = nvcc_check {
-            if status.success() {
+        if let Ok(output) = nvcc_check {
+            if output.status.success() {
+                let obj_ext = if target_os == "windows" { "obj" } else { "o" };
+                let mut obj_files = Vec::new();
+
+                // Step 2: Compile each .cu file into an object file using nvcc -c
+                for cu_file in &cu_files {
+                    let stem = Path::new(cu_file).file_stem().unwrap().to_str().unwrap();
+                    let obj_file = out_dir.join(format!("{}.{}", stem, obj_ext));
+
+                    let mut compile_cmd = Command::new("nvcc");
+                    compile_cmd
+                        .arg("-c")
+                        .arg("-O3")
+                        .arg("--use_fast_math")
+                        .arg("-std=c++17")
+                        .arg("-arch=sm_80");
+
+                    if target_env == "msvc" {
+                        // Match Rust MSVC dynamic C runtime (/MD) to prevent LNK4098 LIBCMT warning
+                        compile_cmd.arg("-Xcompiler").arg("/MD");
+                    } else if target_os != "windows" {
+                        compile_cmd.arg("-Xcompiler").arg("-fPIC");
+                    }
+
+                    compile_cmd.arg("-o").arg(&obj_file);
+                    compile_cmd.arg(cu_file);
+
+                    println!("Cargo NVCC Compile step: {:?}", compile_cmd);
+                    let status = compile_cmd.status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            obj_files.push(obj_file);
+                        }
+                        _ => {
+                            println!("cargo:warning=Failed to compile CUDA file {}", cu_file);
+                            return;
+                        }
+                    }
+                }
+
+                // Step 3: Package object files into a static library via nvcc -lib
                 let lib_name = if target_os == "windows" {
                     "annp_cuda.lib"
                 } else {
                     "libannp_cuda.a"
                 };
-
                 let out_lib_path = out_dir.join(lib_name);
 
-                let mut nvcc_cmd = Command::new("nvcc");
-                nvcc_cmd
-                    .arg("-lib")
-                    .arg("-O3")
-                    .arg("--use_fast_math")
-                    .arg("-std=c++17")
-                    .arg("-arch=sm_80");
-
-                if target_env == "msvc" {
-                    // Match Rust MSVC runtime (/MD) to eliminate LIBCMT LNK4098 linker warnings
-                    nvcc_cmd.arg("-Xcompiler").arg("/MD");
+                let mut lib_cmd = Command::new("nvcc");
+                lib_cmd.arg("-lib").arg("-o").arg(&out_lib_path);
+                for obj in &obj_files {
+                    lib_cmd.arg(obj);
                 }
 
-                nvcc_cmd.arg("-o").arg(&out_lib_path);
-                for cu_file in &cu_files {
-                    nvcc_cmd.arg(cu_file);
-                }
-
-                println!("Compiling CUDA kernels via NVCC: {:?}", nvcc_cmd);
-                let compile_status = nvcc_cmd.status();
-
-                if let Ok(c_status) = compile_status {
-                    if c_status.success() {
+                println!("Cargo NVCC Lib step: {:?}", lib_cmd);
+                if let Ok(lib_status) = lib_cmd.status() {
+                    if lib_status.success() {
                         println!("cargo:rustc-link-search=native={}", out_dir.display());
                         println!("cargo:rustc-link-lib=static=annp_cuda");
                         println!("cargo:rustc-link-lib=cudart");
