@@ -1,0 +1,54 @@
+use annp_core::{MicroBlockConfig, Particle, ParticleHeader};
+use candle_core::{Result, Tensor};
+
+/// Ingress Scattering Pipeline:
+/// Takes Token Embedding matrix [L, d_model] where d_model = N * d_head
+/// Physical Scattering splits embedding into N shards of size [L, d_head]
+pub struct TokenScattering {
+    pub num_shards: usize,
+    pub d_head: usize,
+    pub ingress_node_indices: Vec<usize>,
+}
+
+impl TokenScattering {
+    pub fn new(num_shards: usize, d_head: usize, ingress_ratio: f32) -> Self {
+        let num_ingress = ((num_shards as f32 * ingress_ratio).ceil() as usize).max(1);
+        let ingress_node_indices: Vec<usize> = (0..num_ingress).collect();
+
+        Self {
+            num_shards,
+            d_head,
+            ingress_node_indices,
+        }
+    }
+
+    /// Scatter sequence embeddings into particles
+    pub fn scatter_embeddings(
+        &self,
+        embeddings: &Tensor, // Shape [seq_len, d_model]
+        config: &MicroBlockConfig,
+    ) -> Result<Vec<Particle>> {
+        let (seq_len, d_model) = embeddings.dims2()?;
+        assert_eq!(
+            d_model,
+            self.num_shards * self.d_head,
+            "d_model must equal num_shards * d_head"
+        );
+
+        let data = embeddings.to_vec2::<f32>()?;
+        let mut particles = Vec::with_capacity(seq_len * self.num_shards);
+
+        for t in 0..seq_len {
+            for shard_i in 0..self.num_shards {
+                let start_idx = shard_i * self.d_head;
+                let end_idx = start_idx + self.d_head;
+                let payload = data[t][start_idx..end_idx].to_vec();
+
+                let header = ParticleHeader::new(t as u32, shard_i as u16, config.initial_energy);
+                particles.push(Particle::new(header, payload));
+            }
+        }
+
+        Ok(particles)
+    }
+}

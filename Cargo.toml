@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "annp-core",
+    "annp-cuda",
+    "annp-model",
+    "annp-trainer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["ANNP Team"]
+
+[workspace.dependencies]
+candle-core = "0.8.2"
+candle-nn = "0.8.2"
+half = "2.4"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.11"
+rayon = "1.10"

@@ -1,0 +1,11 @@
+[package]
+name = "annp-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+candle-core.workspace = true
+serde.workspace = true
+rand.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "annp-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+annp-core = { path = "../annp-core" }
+annp-cuda = { path = "../annp-cuda" }
+candle-core.workspace = true
+candle-nn.workspace = true
+serde.workspace = true
+rand.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+annp-trainer = { path = "../annp-trainer" }
