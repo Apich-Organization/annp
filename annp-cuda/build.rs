@@ -2,6 +2,83 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn find_cuda_lib_dir(target_os: &str) -> Option<PathBuf> {
+    // 1. Check CUDA_PATH environment variable
+    if let Ok(cuda_path) = env::var("CUDA_PATH") {
+        let path = PathBuf::from(&cuda_path);
+        let lib_dir = if target_os == "windows" {
+            path.join("lib").join("x64")
+        } else {
+            path.join("lib64")
+        };
+        if lib_dir.exists() {
+            return Some(lib_dir);
+        }
+    }
+
+    // 2. Check CUDA_PATH_V* env vars (Windows versioned paths)
+    for (key, val) in env::vars() {
+        if key.starts_with("CUDA_PATH_V") {
+            let path = PathBuf::from(&val);
+            let lib_dir = if target_os == "windows" {
+                path.join("lib").join("x64")
+            } else {
+                path.join("lib64")
+            };
+            if lib_dir.exists() {
+                return Some(lib_dir);
+            }
+        }
+    }
+
+    // 3. Deduce from nvcc binary location via system path lookup
+    let where_cmd = if target_os == "windows" { "where" } else { "which" };
+    if let Ok(where_out) = Command::new(where_cmd).arg("nvcc").output() {
+        if where_out.status.success() {
+            let path_str = String::from_utf8_lossy(&where_out.stdout);
+            if let Some(first_line) = path_str.lines().next() {
+                let nvcc_bin = PathBuf::from(first_line.trim());
+                if let Some(bin_dir) = nvcc_bin.parent() {
+                    if let Some(cuda_root) = bin_dir.parent() {
+                        let candidate = if target_os == "windows" {
+                            cuda_root.join("lib").join("x64")
+                        } else {
+                            cuda_root.join("lib64")
+                        };
+                        if candidate.exists() {
+                            return Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Check standard default installation directories
+    if target_os == "windows" {
+        let default_base = Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA");
+        if default_base.exists() {
+            if let Ok(entries) = std::fs::read_dir(default_base) {
+                for entry in entries.flatten() {
+                    let cand = entry.path().join("lib").join("x64");
+                    if cand.exists() {
+                        return Some(cand);
+                    }
+                }
+            }
+        }
+    } else {
+        for candidate in &["/usr/local/cuda/lib64", "/usr/local/cuda/lib", "/usr/lib/x86_64-linux-gnu"] {
+            let p = PathBuf::from(candidate);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    None
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=cuda/common.cuh");
     println!("cargo:rerun-if-changed=cuda/micro_block_fused.cu");
@@ -82,6 +159,11 @@ fn main() {
                 println!("Cargo NVCC Lib step: {:?}", lib_cmd);
                 if let Ok(lib_status) = lib_cmd.status() {
                     if lib_status.success() {
+                        // Auto-detect CUDA toolkit library path for cudart.lib / libcudart.so
+                        if let Some(cuda_lib_dir) = find_cuda_lib_dir(&target_os) {
+                            println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
+                        }
+
                         println!("cargo:rustc-link-search=native={}", out_dir.display());
                         println!("cargo:rustc-link-lib=static=annp_cuda");
                         println!("cargo:rustc-link-lib=cudart");
