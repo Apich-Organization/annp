@@ -62,10 +62,10 @@ enum Commands {
         #[arg(short = 'd', long, default_value = "auto")]
         device: String,
         /// Enable Online Continual Learning mode during inference (updates node activation counts & plastic hardening)
-        #[arg(short = 'c', long)]
+        #[arg(long)]
         continual: bool,
         /// Save output sequence tensor to binary file (.annpb)
-        #[arg(short = 's', long)]
+        #[arg(short, long)]
         save_output: Option<PathBuf>,
         /// Enable high-throughput particle processing benchmark
         #[arg(short, long)]

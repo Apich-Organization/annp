@@ -18,6 +18,7 @@ lambda_temporal = 0.001
 lambda_frequency = 0.01
 eviction_threshold = 0.0001
 pruning_threshold = 0.00001
+neurogenesis_threshold = 50
 
 [stage0_wave]
 enabled = true

@@ -4,6 +4,7 @@ use crate::serializer::EgressSerializer;
 use crate::topology::TopologyGrid;
 use annp_core::{MicroBlockConfig, Particle};
 use candle_core::{Device, Result, Tensor};
+use rayon::prelude::*;
 
 /// Full ANNP Architecture Pipeline.
 pub struct ANNPModel {
@@ -54,11 +55,11 @@ impl ANNPModel {
     /// Forward pass through ANNP P2P Mesh with batch-wise state reset and lock-free asynchronous particle routing
     pub fn forward(&mut self, embeddings: &Tensor) -> Result<Tensor> {
         // Reset node KV Caches before each forward batch to prevent cross-batch historical state pollution
-        for node in self.nodes.iter_mut() {
+        self.nodes.par_iter_mut().for_each(|node| {
             node.k_cache.clear();
             node.v_cache.clear();
             node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
-        }
+        });
 
         let (seq_len, _) = embeddings.dims2()?;
         let initial_particles = self
@@ -86,7 +87,7 @@ impl ANNPModel {
         let mut step = 0;
         let max_steps = self.config.max_hop as usize + 20;
 
-        let mut curr_batch: Vec<Particle> = Vec::with_capacity(64);
+        let mut curr_batches: Vec<Vec<Particle>> = vec![Vec::with_capacity(64); self.num_nodes];
 
         while active_loop && step < max_steps {
             step += 1;
@@ -96,18 +97,30 @@ impl ANNPModel {
                 q.clear();
             }
 
+            // Extract node queues in parallel
             for node_id in 0..self.num_nodes {
-                curr_batch.clear();
-                std::mem::swap(&mut curr_batch, &mut self.node_queues[node_id]);
+                curr_batches[node_id].clear();
+                std::mem::swap(&mut curr_batches[node_id], &mut self.node_queues[node_id]);
+            }
+
+            // High-throughput CPU multi-core parallel execution across all Micro-Block nodes via Rayon
+            self.nodes
+                .par_iter_mut()
+                .zip(curr_batches.par_iter_mut())
+                .for_each(|(node, batch)| {
+                    if !batch.is_empty() {
+                        node.process_batch(batch);
+                    }
+                });
+
+            // Push-routing decision for output particles with P2P Backpressure penalty
+            for node_id in 0..self.num_nodes {
+                let curr_batch = &mut curr_batches[node_id];
                 if curr_batch.is_empty() {
                     continue;
                 }
                 active_loop = true;
 
-                // Process Micro-Block computing
-                self.nodes[node_id].process_batch(&mut curr_batch);
-
-                // Push-routing decision for output particles with P2P Backpressure penalty
                 let neighbors = &self.topology.routing_tables[node_id].neighbors;
 
                 for p in curr_batch.drain(..) {
