@@ -43,11 +43,7 @@ fn main() {
                     .flag("-arch=sm_80") // Default targeting Ampere / Hopper architecture
                     .files(cu_files);
 
-                #[cfg(unix)]
                 builder.compile("libannp_cuda.a");
-
-                #[cfg(windows)]
-                builder.compile("libannp_cuda.lib");
 
                 println!("cargo:rustc-link-search=native={}", out_dir.display());
                 println!("cargo:rustc-link-lib=static=annp_cuda");
