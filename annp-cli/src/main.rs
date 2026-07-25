@@ -55,6 +55,9 @@ enum Commands {
         /// Runtime routing temperature override (\tau > 0)
         #[arg(short = 't', long)]
         temperature: Option<f32>,
+        /// Enable Online Continual Learning mode during inference (updates node activation counts & plastic hardening)
+        #[arg(short = 'c', long)]
+        continual: bool,
         /// Save output sequence tensor to binary file (.annpb)
         #[arg(short = 's', long)]
         save_output: Option<PathBuf>,
@@ -91,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint,
             input,
             temperature,
+            continual,
             save_output,
             benchmark,
         } => execute_run(
@@ -98,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint,
             input,
             temperature,
+            continual,
             save_output,
             benchmark,
         )?,

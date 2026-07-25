@@ -1,6 +1,7 @@
 use crate::checkpoint::ModelCheckpoint;
 use crate::config::AnnpTomlConfig;
 use annp_model::ANNPModel;
+use annp_trainer::Stage1HardeningTrainer;
 use candle_core::{Device, Tensor};
 use std::fs::File;
 use std::io::Write;
@@ -12,6 +13,7 @@ pub fn execute_run(
     checkpoint_path: Option<PathBuf>,
     input_text: Option<String>,
     temperature_override: Option<f32>,
+    continual_mode: bool,
     save_output: Option<PathBuf>,
     benchmark: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -59,7 +61,16 @@ pub fn execute_run(
         Tensor::randn(0.0f32, 1.0f32, (seq_len, d_model), &device)?
     };
 
-    println!("\n=== Executing ANNP Model Inference Pass ===");
+    let run_mode_str = if continual_mode {
+        "Continual Online Adaptation Mode (Dynamic Hardening)"
+    } else {
+        "Static Production Mode (Deterministic Frozen Weights)"
+    };
+
+    println!(
+        "\n=== Executing ANNP Model Inference Pass ({}) ===",
+        run_mode_str
+    );
     println!("Input Tensor Shape: {:?}", input_tensor.shape());
 
     let iterations = if benchmark { 50 } else { 1 };
@@ -68,6 +79,12 @@ pub fn execute_run(
 
     for _ in 0..iterations {
         last_output = model.forward(&input_tensor)?;
+
+        if continual_mode {
+            // Apply Online Plasticity Hardening & Continual Adaptation
+            let trainer = Stage1HardeningTrainer::new(0.02, 0.001, 1.5);
+            trainer.apply_plastic_hardening(&mut model);
+        }
     }
 
     let elapsed = start_time.elapsed();
@@ -75,6 +92,13 @@ pub fn execute_run(
     let particles_per_sec = total_particles_processed as f64 / elapsed.as_secs_f64();
 
     println!("Output Sequence Tensor Shape: {:?}", last_output.shape());
+
+    if continual_mode {
+        println!(
+            "Online Continual Learning Pass applied to all {} Micro-Block nodes.",
+            model.num_nodes
+        );
+    }
 
     // Save binary output tensor if requested (.annpb)
     if let Some(save_path) = save_output {
@@ -98,6 +122,7 @@ pub fn execute_run(
 
     if benchmark {
         println!("\n=== ANNP High-Throughput Performance Benchmark ===");
+        println!("Mode: {}", run_mode_str);
         println!("Iterations Executed: {}", iterations);
         println!(
             "Total Processing Time: {:.4} seconds",
