@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 1;
+const ANNPB_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeCheckpoint {
@@ -65,7 +65,7 @@ impl ModelCheckpoint {
         }
     }
 
-    /// Zero-overhead binary serializer (.annpb)
+    /// Zero-overhead binary serializer (.annpb v2)
     pub fn save_binary<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
         let mut file = File::create(path)?;
         file.write_all(ANNPB_MAGIC)?;
@@ -78,6 +78,13 @@ impl ModelCheckpoint {
 
         file.write_all(&stage_u32.to_le_bytes())?;
         file.write_all(&epoch_u32.to_le_bytes())?;
+
+        // Write Config payload as UTF-8 JSON String
+        let config_json = serde_json::to_string(&self.config)?;
+        let config_bytes = config_json.as_bytes();
+        file.write_all(&(config_bytes.len() as u32).to_le_bytes())?;
+        file.write_all(config_bytes)?;
+
         file.write_all(&num_nodes_u32.to_le_bytes())?;
         file.write_all(&num_routes_u32.to_le_bytes())?;
 
@@ -86,6 +93,7 @@ impl ModelCheckpoint {
             file.write_all(&(node.node_id as u32).to_le_bytes())?;
             file.write_all(&node.alpha.to_le_bytes())?;
             file.write_all(&node.cumulative_sequence_len.to_le_bytes())?;
+            file.write_all(&node.activation_count.to_le_bytes())?;
 
             let gate_bytes = unsafe {
                 std::slice::from_raw_parts(node.w_gate.as_ptr() as *const u8, node.w_gate.len() * 4)
@@ -143,12 +151,23 @@ impl ModelCheckpoint {
         let mut buf8 = [0u8; 8];
 
         file.read_exact(&mut buf4)?;
-        let _version = u32::from_le_bytes(buf4);
+        let version = u32::from_le_bytes(buf4);
 
         file.read_exact(&mut buf4)?;
         let stage_completed = u32::from_le_bytes(buf4) as usize;
         file.read_exact(&mut buf4)?;
         let epoch_completed = u32::from_le_bytes(buf4) as usize;
+
+        let config = if version >= 2 {
+            file.read_exact(&mut buf4)?;
+            let config_len = u32::from_le_bytes(buf4) as usize;
+            let mut config_buf = vec![0u8; config_len];
+            file.read_exact(&mut config_buf)?;
+            serde_json::from_slice(&config_buf)?
+        } else {
+            MicroBlockConfig::default()
+        };
+
         file.read_exact(&mut buf4)?;
         let num_nodes = u32::from_le_bytes(buf4) as usize;
         file.read_exact(&mut buf4)?;
@@ -166,6 +185,13 @@ impl ModelCheckpoint {
 
             file.read_exact(&mut buf8)?;
             let cumulative_sequence_len = u64::from_le_bytes(buf8);
+
+            let activation_count = if version >= 2 {
+                file.read_exact(&mut buf8)?;
+                u64::from_le_bytes(buf8)
+            } else {
+                0
+            };
 
             // Read W_gate
             file.read_exact(&mut buf4)?;
@@ -200,7 +226,7 @@ impl ModelCheckpoint {
                 w_down,
                 alpha,
                 cumulative_sequence_len,
-                activation_count: 0,
+                activation_count,
             });
         }
 
@@ -242,12 +268,10 @@ impl ModelCheckpoint {
             });
         }
 
-        let default_config = MicroBlockConfig::default();
-
         Ok(Self {
             stage_completed,
             epoch_completed,
-            config: default_config,
+            config,
             nodes,
             routing_tables,
             w_egress,
@@ -255,6 +279,20 @@ impl ModelCheckpoint {
     }
 
     pub fn apply_to_model(&self, model: &mut ANNPModel) {
+        model.config = self.config.clone();
+
+        let max_node_id = self.nodes.iter().map(|n| n.node_id).max().unwrap_or(0);
+        let required_nodes = (max_node_id + 1).max(self.nodes.len());
+
+        while model.nodes.len() < required_nodes {
+            let new_id = model.nodes.len();
+            let new_node = annp_model::MicroBlockNode::new(new_id, model.config.clone(), 64, false);
+            model.nodes.push(new_node);
+            model.node_queues.push(Vec::with_capacity(64));
+            model.next_queues.push(Vec::with_capacity(64));
+        }
+        model.num_nodes = model.nodes.len();
+
         for node_ckpt in &self.nodes {
             if node_ckpt.node_id < model.nodes.len() {
                 let node = &mut model.nodes[node_ckpt.node_id];
@@ -266,7 +304,8 @@ impl ModelCheckpoint {
                 node.activation_count = node_ckpt.activation_count;
             }
         }
-        if !self.w_egress.is_empty() && self.w_egress.len() == model.serializer.w_egress.len() {
+
+        if !self.w_egress.is_empty() {
             model.serializer.w_egress = self.w_egress.clone();
         }
         if !self.routing_tables.is_empty() {
@@ -301,5 +340,55 @@ impl ModelCheckpoint {
             routing_tables: model.topology.routing_tables.clone(),
             w_egress: model.serializer.w_egress.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::Device;
+
+    #[test]
+    fn test_checkpoint_binary_and_json_roundtrip() {
+        let mut config = MicroBlockConfig::default();
+        config.mesh_rows = 4;
+        config.mesh_cols = 4;
+        config.d_head = 32;
+        config.alpha_init = 0.05;
+
+        let model = ANNPModel::new(16, 2, config.clone(), Device::Cpu);
+        let mut ckpt = ModelCheckpoint::extract_from_model(&model, 1, 5);
+        ckpt.nodes[0].activation_count = 123;
+
+        let tmp_dir = std::env::temp_dir();
+        let bin_path = tmp_dir.join("test_checkpoint_tmp.annpb");
+        let json_path = tmp_dir.join("test_checkpoint_tmp.json");
+
+        // 1. Binary (.annpb) roundtrip
+        ckpt.save(&bin_path).unwrap();
+
+        let loaded_bin = ModelCheckpoint::load(&bin_path).unwrap();
+        assert_eq!(loaded_bin.stage_completed, 1);
+        assert_eq!(loaded_bin.epoch_completed, 5);
+        assert_eq!(loaded_bin.config.d_head, 32);
+        assert_eq!(loaded_bin.nodes[0].activation_count, 123);
+
+        // 2. JSON roundtrip
+        ckpt.save(&json_path).unwrap();
+
+        let loaded_json = ModelCheckpoint::load(&json_path).unwrap();
+        assert_eq!(loaded_json.stage_completed, 1);
+        assert_eq!(loaded_json.config.d_head, 32);
+        assert_eq!(loaded_json.nodes[0].activation_count, 123);
+
+        // 3. Apply to new model (Neurogenesis Grown Nodes handling)
+        let mut target_model = ANNPModel::new(4, 2, MicroBlockConfig::default(), Device::Cpu);
+        loaded_bin.apply_to_model(&mut target_model);
+        assert_eq!(target_model.nodes.len(), 16);
+        assert_eq!(target_model.config.d_head, 32);
+        assert_eq!(target_model.nodes[0].activation_count, 123);
+
+        let _ = fs::remove_file(bin_path);
+        let _ = fs::remove_file(json_path);
     }
 }
