@@ -165,8 +165,7 @@ fn main() {
                     .arg(format!("-arch={}", cuda_arch));
 
                 if target_env == "msvc" {
-                    // Match Rust MSVC dynamic C runtime (/MD) to prevent LNK4098 LIBCMT warning
-                    compile_cmd.arg("-Xcompiler").arg("/MD");
+                    compile_cmd.arg("-Xcompiler").arg("/MT");
                 } else if target_os != "windows" {
                     compile_cmd.arg("-Xcompiler").arg("-fPIC");
                 }
