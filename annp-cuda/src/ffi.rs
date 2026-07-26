@@ -155,6 +155,7 @@ impl CudaMicroBlockRunner {
         );
     }
 
+    #[allow(unused_variables)]
     pub fn execute_fused_with_stream_device(
         p_in: &[f32],
         k_cache: &[f32],
@@ -170,7 +171,7 @@ impl CudaMicroBlockRunner {
         norm_strategy: usize,
         alpha: f32,
         sphere_radius: f32,
-        _stream: Option<&CudaStreamManager>,
+        stream: Option<&CudaStreamManager>,
         use_cuda: bool,
     ) {
         if batch_size == 0 || d_head == 0 || ffn_dim == 0 {
