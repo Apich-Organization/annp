@@ -9,7 +9,8 @@ use std::path::PathBuf;
 pub fn select_device(device_str: &str) -> Device {
     let requested_cpu = device_str.to_lowercase() == "cpu";
     let force_cuda = matches!(device_str.to_lowercase().as_str(), "cuda" | "gpu");
-    let allow_cuda = !requested_cpu && (force_cuda || device_str.to_lowercase() == "auto");
+    let allow_cuda =
+        !requested_cpu && (force_cuda || device_str.to_lowercase() == "auto" || device_str == "");
 
     if allow_cuda {
         if let Ok(cuda_dev) = Device::new_cuda(0) {
