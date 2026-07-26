@@ -2,116 +2,128 @@
 #define ANNP_CUDA_COMMON_CUH
 
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
-#define MAX_D_HEAD 128
 #define WARP_SIZE 32
 #define FULL_WARP_MASK 0xffffffff
 
-// CUDA error checking macro
+// Error checking macro
 #define CHECK_CUDA(call) \
     do { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
-            fprintf(stderr, "CUDA Error at %s:%d - %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            /* Non-fatal logging for dynamic memory management */ \
         } \
     } while (0)
 
+// Helper: Safe dynamic allocation fallback if cudaMallocAsync is unsupported
+inline cudaError_t safe_cuda_malloc_async(void** ptr, size_t size, cudaStream_t stream) {
+    cudaError_t err = cudaMallocAsync(ptr, size, stream);
+    if (err != cudaSuccess) {
+        cudaGetLastError(); // Clear error state
+        err = cudaMalloc(ptr, size);
+    }
+    return err;
+}
+
+// SwiGLU activation helper
+__device__ inline float swiglu(float gate, float up) {
+    float swish = gate / (1.0f + __expf(-gate));
+    return swish * up;
+}
+
+// Struct layout matching Rust ParticleCudaHeader exactly (16 bytes)
 struct ParticleCudaHeader {
-    unsigned int origin_token_id;
-    unsigned short shard_id;
-    float energy;
-    unsigned short hop_count;
-    bool halted;
+    uint32_t origin_token_id; // 0..4
+    uint16_t shard_id;        // 4..6
+    uint8_t pad0[2];          // 6..8 explicit padding before float energy
+    float energy;             // 8..12
+    uint16_t hop_count;       // 12..14
+    uint8_t halted;           // 14..15
+    uint8_t pad1[1];          // 15..16 trailing padding
 };
 
-// Hardware Fast Swish activation: x * sigmoid(x)
-__device__ __forceinline__ float swish(float x) {
-    return x / (1.0f + __expf(-x));
-}
+static_assert(sizeof(ParticleCudaHeader) == 16, "ParticleCudaHeader size must be exactly 16 bytes");
 
-// Hardware Fast SwiGLU activation for FFN
-__device__ __forceinline__ float swiglu(float gate, float up) {
-    return swish(gate) * up;
-}
-
-// Full 32-thread Warp-level parallel sum reduction using registers (__shfl_down_sync)
-__device__ __forceinline__ float warp_reduce_sum(float val) {
+// Warp reduction primitives
+__device__ inline float warp_reduce_sum(float val) {
+    #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
         val += __shfl_down_sync(FULL_WARP_MASK, val, offset);
     }
     return val;
 }
 
-// Full 32-thread Warp-level parallel max reduction using registers (__shfl_down_sync)
-__device__ __forceinline__ float warp_reduce_max(float val) {
+__device__ inline float warp_reduce_max(float val) {
+    #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        float other = __shfl_down_sync(FULL_WARP_MASK, val, offset);
-        val = fmaxf(val, other);
+        val = fmaxf(val, __shfl_down_sync(FULL_WARP_MASK, val, offset));
     }
     return val;
 }
 
-// Vectorized 128-bit float4 copy helper (16 bytes per instruction) with alignment safety
-__device__ __forceinline__ void copy_float4(float* dst, const float* src, int count) {
-    bool aligned = (((uintptr_t)dst | (uintptr_t)src) & 15) == 0;
-    if (aligned) {
-        int num_float4 = count / 4;
-        float4* d = reinterpret_cast<float4*>(dst);
-        const float4* s = reinterpret_cast<const float4*>(src);
-        
-        for (int i = 0; i < num_float4; ++i) {
-            d[i] = s[i];
-        }
-        
-        int remainder = count % 4;
-        int start_idx = count - remainder;
-        for (int i = 0; i < remainder; ++i) {
-            dst[start_idx + i] = src[start_idx + i];
-        }
-    } else {
-        for (int i = 0; i < count; ++i) {
-            dst[i] = src[i];
-        }
+__device__ inline int warp_reduce_max_int(int val) {
+    #pragma unroll
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+        val = max(val, __shfl_down_sync(FULL_WARP_MASK, val, offset));
     }
+    return val;
 }
 
-// Host/Device memory detection & Zero-Copy helper
+// Host/Device memory detection & Zero-Copy helper with Sticky Error Clearing
 template <typename T>
-inline const T* get_device_ptr(const T* host_or_dev, T* d_pool_buf, size_t count, cudaStream_t stream) {
+inline const T* get_device_ptr(const T* host_or_dev, T* d_pool_buf, size_t count, cudaStream_t stream, bool* was_host_copied = nullptr) {
     if (!host_or_dev || count == 0) return d_pool_buf;
     cudaPointerAttributes attr;
-    if (cudaPointerGetAttributes(&attr, host_or_dev) == cudaSuccess && attr.type == cudaMemoryTypeDevice) {
+    cudaError_t err = cudaPointerGetAttributes(&attr, host_or_dev);
+    if (err == cudaSuccess && (attr.type == cudaMemoryTypeDevice || attr.type == cudaMemoryTypeManaged)) {
         return host_or_dev;
+    }
+    if (err != cudaSuccess) {
+        cudaGetLastError(); // Clear sticky CUDA error status from invalid host pointer inspection
     }
     if (d_pool_buf) {
         cudaMemcpyAsync(d_pool_buf, host_or_dev, count * sizeof(T), cudaMemcpyHostToDevice, stream);
+        if (was_host_copied) *was_host_copied = true;
     }
     return d_pool_buf;
 }
 
 template <typename T>
-inline T* get_device_ptr_mut(T* host_or_dev, T* d_pool_buf, size_t count, cudaStream_t stream) {
+inline T* get_device_ptr_mut(T* host_or_dev, T* d_pool_buf, size_t count, cudaStream_t stream, bool* was_host_copied = nullptr) {
     if (!host_or_dev || count == 0) return d_pool_buf;
     cudaPointerAttributes attr;
-    if (cudaPointerGetAttributes(&attr, host_or_dev) == cudaSuccess && attr.type == cudaMemoryTypeDevice) {
+    cudaError_t err = cudaPointerGetAttributes(&attr, host_or_dev);
+    if (err == cudaSuccess && (attr.type == cudaMemoryTypeDevice || attr.type == cudaMemoryTypeManaged)) {
         return host_or_dev;
+    }
+    if (err != cudaSuccess) {
+        cudaGetLastError(); // Clear sticky CUDA error status
+    }
+    if (d_pool_buf) {
+        if (was_host_copied) *was_host_copied = true;
     }
     return d_pool_buf;
 }
 
 template <typename T>
-inline void copy_back_if_host(T* host_or_dev, const T* d_buf, size_t count, cudaStream_t stream) {
-    if (!host_or_dev || !d_buf || count == 0 || (const void*)host_or_dev == (const void*)d_buf) return;
+inline bool copy_back_if_host(T* host_or_dev, const T* d_buf, size_t count, cudaStream_t stream) {
+    if (!host_or_dev || !d_buf || count == 0 || (const void*)host_or_dev == (const void*)d_buf) return false;
     cudaPointerAttributes attr;
-    if (cudaPointerGetAttributes(&attr, host_or_dev) == cudaSuccess && attr.type == cudaMemoryTypeDevice) {
+    cudaError_t err = cudaPointerGetAttributes(&attr, host_or_dev);
+    if (err == cudaSuccess && (attr.type == cudaMemoryTypeDevice || attr.type == cudaMemoryTypeManaged)) {
         if ((const void*)host_or_dev != (const void*)d_buf) {
             cudaMemcpyAsync(host_or_dev, d_buf, count * sizeof(T), cudaMemcpyDeviceToDevice, stream);
         }
+        return false;
     } else {
+        if (err != cudaSuccess) {
+            cudaGetLastError(); // Clear sticky CUDA error status
+        }
         cudaMemcpyAsync(host_or_dev, d_buf, count * sizeof(T), cudaMemcpyDeviceToHost, stream);
+        return true;
     }
 }
 

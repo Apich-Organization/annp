@@ -1,5 +1,7 @@
 pub mod ffi;
 pub mod stream;
 
-pub use ffi::{CudaMicroBlockRunner, ParticleCudaHeader};
+pub use ffi::{
+    CudaMicroBlockRunner, CudaParticleAggregator, CudaParticleRouter, ParticleCudaHeader,
+};
 pub use stream::CudaStreamManager;

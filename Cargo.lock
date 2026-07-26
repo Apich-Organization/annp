@@ -60,11 +60,7 @@ dependencies = [
 name = "annp-cuda"
 version = "0.1.0"
 dependencies = [
- "annp-core",
- "candle-core",
  "cc",
- "log",
- "thiserror 1.0.69",
 ]
 
 [[package]]

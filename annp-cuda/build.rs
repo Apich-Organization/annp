@@ -88,7 +88,7 @@ fn find_cuda_lib_dir(target_os: &str) -> Option<PathBuf> {
 }
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(cuda_available)");
+    println!("cargo:rustc-check-cfg=cfg(cuda_available)");
     println!("cargo:rerun-if-changed=cuda/common.cuh");
     println!("cargo:rerun-if-changed=cuda/micro_block_fused.cu");
     println!("cargo:rerun-if-changed=cuda/particle_router.cu");
@@ -155,12 +155,13 @@ fn main() {
                             compile_cmd.env("PATH", new_path);
                         }
                     }
+                    let cuda_arch = env::var("CUDA_ARCH").unwrap_or_else(|_| "sm_80".to_string());
                     compile_cmd
                         .arg("-c")
                         .arg("-O3")
                         .arg("--use_fast_math")
                         .arg("-std=c++17")
-                        .arg("-arch=sm_80");
+                        .arg(format!("-arch={}", cuda_arch));
 
                     if target_env == "msvc" {
                         // Match Rust MSVC dynamic C runtime (/MD) to prevent LNK4098 LIBCMT warning
@@ -282,7 +283,6 @@ fn main() {
                     println!("cargo:rustc-link-lib=static=annp_cuda");
                     println!("cargo:rustc-link-lib=cudart");
                     println!("cargo:rustc-cfg=cuda_available");
-                    println!("cargo:rustc-cfg=feature=\"cuda\"");
                     return;
                 }
             }
