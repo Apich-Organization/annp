@@ -28,7 +28,7 @@ impl Stage1HardeningTrainer {
         new_node_id: usize,
         config: MicroBlockConfig,
     ) -> MicroBlockNode {
-        let mut new_node = MicroBlockNode::new(new_node_id, config, 64);
+        let mut new_node = MicroBlockNode::new(new_node_id, config, 64, node_a.use_cuda);
         let mut rng = rand::rng();
         let alpha = 0.5f32;
         let epsilon_scale = 0.01f32;

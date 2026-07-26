@@ -9,19 +9,24 @@ use std::path::PathBuf;
 pub fn select_device(device_str: &str) -> Device {
     let requested_cpu = device_str.to_lowercase() == "cpu";
     let force_cuda = matches!(device_str.to_lowercase().as_str(), "cuda" | "gpu");
-    let allow_cuda =
-        !requested_cpu && (force_cuda || device_str.to_lowercase() == "auto" || device_str == "");
+    let cuda_compiled = annp_cuda::is_cuda_available();
+    let allow_cuda = !requested_cpu
+        && (force_cuda || device_str.to_lowercase() == "auto" || device_str.is_empty());
 
-    if allow_cuda {
+    if allow_cuda && cuda_compiled {
         if let Ok(cuda_dev) = Device::new_cuda(0) {
             println!("ANNP Native CUDA Kernel Acceleration: Active (NVIDIA GPU 0)");
             println!("Selected Compute Device: Cuda(0) [NVIDIA High-Performance GPU Engine]");
             return cuda_dev;
         } else if force_cuda {
             println!(
-                "Warning: CUDA device requested but CUDA initialization failed. Falling back to CPU."
+                "Warning: CUDA device requested but CUDA GPU initialization failed. Falling back to CPU."
             );
         }
+    } else if force_cuda && !cuda_compiled {
+        println!(
+            "Warning: CUDA device requested but ANNP binary was built without CUDA support. Falling back to CPU."
+        );
     }
 
     println!("Selected Compute Device: Cpu [AVX2 SIMD Engine]");

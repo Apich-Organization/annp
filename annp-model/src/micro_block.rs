@@ -30,10 +30,16 @@ pub struct MicroBlockNode {
     // Reusable workspace scratch buffers to avoid heap allocations in process_batch
     pub p_in_buf: Vec<f32>,
     pub p_out_buf: Vec<f32>,
+    pub use_cuda: bool,
 }
 
 impl MicroBlockNode {
-    pub fn new(node_id: usize, config: MicroBlockConfig, max_kv_len: usize) -> Self {
+    pub fn new(
+        node_id: usize,
+        config: MicroBlockConfig,
+        max_kv_len: usize,
+        use_cuda: bool,
+    ) -> Self {
         let d_head = config.d_head;
         let ffn_dim = d_head * config.ffn_expansion;
 
@@ -53,11 +59,14 @@ impl MicroBlockNode {
         let v_gate = vec![0.0f32; d_head * ffn_dim];
         let v_up = vec![0.0f32; d_head * ffn_dim];
         let v_down = vec![0.0f32; ffn_dim * d_head];
+
+        let alpha = config.alpha_init;
+        let k_cache = Vec::with_capacity(max_kv_len * d_head);
+        let v_cache = Vec::with_capacity(max_kv_len * d_head);
         let last_p_in = vec![0.0f32; d_head];
 
         Self {
             node_id,
-            alpha: config.alpha_init,
             config,
             w_gate,
             w_up,
@@ -65,14 +74,16 @@ impl MicroBlockNode {
             v_gate,
             v_up,
             v_down,
-            k_cache: Vec::new(),
-            v_cache: Vec::new(),
+            alpha,
+            k_cache,
+            v_cache,
             max_kv_len,
             last_p_in,
             cumulative_sequence_len: 0,
             activation_count: 0,
             p_in_buf: Vec::with_capacity(64 * d_head),
             p_out_buf: Vec::with_capacity(64 * d_head),
+            use_cuda,
         }
     }
 
@@ -128,8 +139,8 @@ impl MicroBlockNode {
         self.p_out_buf.clear();
         self.p_out_buf.resize(batch_size * d_head, 0.0f32);
 
-        // Launch CUDA / Fused CudaMicroBlockRunner kernel
-        CudaMicroBlockRunner::execute_fused(
+        // Launch CUDA / Fused CudaMicroBlockRunner kernel (respecting self.use_cuda flag)
+        CudaMicroBlockRunner::execute_fused_with_stream_device(
             &self.p_in_buf,
             &self.k_cache,
             &self.v_cache,
@@ -144,6 +155,8 @@ impl MicroBlockNode {
             norm_strat_val,
             self.alpha,
             self.config.sphere_radius,
+            None,
+            self.use_cuda,
         );
 
         // Update particles, evaluation halting condition and metrics

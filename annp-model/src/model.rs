@@ -66,8 +66,9 @@ impl ANNPModel {
         let topology = TopologyGrid::new(num_nodes, d_head, 4);
         let serializer = EgressSerializer::new(d_head, num_shards);
 
+        let use_cuda = matches!(device, Device::Cuda(_));
         let nodes = (0..num_nodes)
-            .map(|i| MicroBlockNode::new(i, config.clone(), 64))
+            .map(|i| MicroBlockNode::new(i, config.clone(), 64, use_cuda))
             .collect();
 
         let node_queues = vec![Vec::with_capacity(64); num_nodes];

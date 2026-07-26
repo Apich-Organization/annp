@@ -98,7 +98,7 @@ impl CudaMicroBlockRunner {
         alpha: f32,
         sphere_radius: f32,
     ) {
-        Self::execute_fused_with_stream(
+        Self::execute_fused_with_stream_device(
             p_in,
             k_cache,
             v_cache,
@@ -114,6 +114,7 @@ impl CudaMicroBlockRunner {
             alpha,
             sphere_radius,
             None,
+            true,
         );
     }
 
@@ -133,6 +134,44 @@ impl CudaMicroBlockRunner {
         alpha: f32,
         sphere_radius: f32,
         stream: Option<&CudaStreamManager>,
+    ) {
+        Self::execute_fused_with_stream_device(
+            p_in,
+            k_cache,
+            v_cache,
+            w_gate,
+            w_up,
+            w_down,
+            p_out,
+            batch_size,
+            d_head,
+            ffn_dim,
+            kv_len,
+            norm_strategy,
+            alpha,
+            sphere_radius,
+            stream,
+            true,
+        );
+    }
+
+    pub fn execute_fused_with_stream_device(
+        p_in: &[f32],
+        k_cache: &[f32],
+        v_cache: &[f32],
+        w_gate: &[f32],
+        w_up: &[f32],
+        w_down: &[f32],
+        p_out: &mut [f32],
+        batch_size: usize,
+        d_head: usize,
+        ffn_dim: usize,
+        kv_len: usize,
+        norm_strategy: usize,
+        alpha: f32,
+        sphere_radius: f32,
+        _stream: Option<&CudaStreamManager>,
+        use_cuda: bool,
     ) {
         if batch_size == 0 || d_head == 0 || ffn_dim == 0 {
             return;
@@ -189,64 +228,46 @@ impl CudaMicroBlockRunner {
             w_down.len()
         );
 
-        let _stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
-
-        #[cfg(cuda_available)]
-        unsafe {
-            launch_fused_micro_block(
-                p_in.as_ptr(),
-                k_cache.as_ptr(),
-                v_cache.as_ptr(),
-                w_gate.as_ptr(),
-                w_up.as_ptr(),
-                w_down.as_ptr(),
-                p_out.as_mut_ptr(),
-                batch_size as i32,
-                d_head as i32,
-                ffn_dim as i32,
-                kv_len as i32,
-                norm_strategy as i32,
-                alpha,
-                sphere_radius,
-                _stream_ptr,
-            );
+        if use_cuda {
+            #[cfg(cuda_available)]
+            unsafe {
+                let stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+                launch_fused_micro_block(
+                    p_in.as_ptr(),
+                    k_cache.as_ptr(),
+                    v_cache.as_ptr(),
+                    w_gate.as_ptr(),
+                    w_up.as_ptr(),
+                    w_down.as_ptr(),
+                    p_out.as_mut_ptr(),
+                    batch_size as i32,
+                    d_head as i32,
+                    ffn_dim as i32,
+                    kv_len as i32,
+                    norm_strategy as i32,
+                    alpha,
+                    sphere_radius,
+                    stream_ptr,
+                );
+                return;
+            }
         }
 
-        #[cfg(not(cuda_available))]
-        {
+        #[cfg(target_arch = "x86_64")]
+        let is_x86_avx2 = d_head <= MAX_D_HEAD
+            && d_head.is_multiple_of(8)
+            && ffn_dim <= MAX_FFN_DIM
+            && ffn_dim.is_multiple_of(8)
+            && is_x86_feature_detected!("avx2")
+            && is_x86_feature_detected!("fma");
+
+        #[cfg(not(target_arch = "x86_64"))]
+        let is_x86_avx2 = false;
+
+        if is_x86_avx2 {
             #[cfg(target_arch = "x86_64")]
-            let is_x86_avx2 = d_head <= MAX_D_HEAD
-                && d_head.is_multiple_of(8)
-                && ffn_dim <= MAX_FFN_DIM
-                && ffn_dim.is_multiple_of(8)
-                && is_x86_feature_detected!("avx2")
-                && is_x86_feature_detected!("fma");
-
-            #[cfg(not(target_arch = "x86_64"))]
-            let is_x86_avx2 = false;
-
-            if is_x86_avx2 {
-                #[cfg(target_arch = "x86_64")]
-                unsafe {
-                    Self::execute_fused_avx2(
-                        p_in,
-                        k_cache,
-                        v_cache,
-                        w_gate,
-                        w_up,
-                        w_down,
-                        p_out,
-                        batch_size,
-                        d_head,
-                        ffn_dim,
-                        kv_len,
-                        norm_strategy,
-                        alpha,
-                        sphere_radius,
-                    );
-                }
-            } else {
-                Self::execute_fused_fallback(
+            unsafe {
+                Self::execute_fused_avx2(
                     p_in,
                     k_cache,
                     v_cache,
@@ -263,6 +284,23 @@ impl CudaMicroBlockRunner {
                     sphere_radius,
                 );
             }
+        } else {
+            Self::execute_fused_fallback(
+                p_in,
+                k_cache,
+                v_cache,
+                w_gate,
+                w_up,
+                w_down,
+                p_out,
+                batch_size,
+                d_head,
+                ffn_dim,
+                kv_len,
+                norm_strategy,
+                alpha,
+                sphere_radius,
+            );
         }
     }
 
