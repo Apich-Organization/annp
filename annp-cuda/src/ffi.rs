@@ -189,19 +189,45 @@ impl CudaMicroBlockRunner {
     ) {
         use std::arch::x86_64::*;
 
-        let dh_clamped = d_head.min(64);
-        let ffn_clamped = ffn_dim.min(512);
+        // Guard upper bounds for stack buffer allocations (supports d_head=128+)
+        assert!(
+            d_head <= 256 && d_head % 8 == 0,
+            "d_head must be <= 256 and divisible by 8"
+        );
+        assert!(
+            ffn_dim <= 1024 && ffn_dim % 8 == 0,
+            "ffn_dim must be <= 1024 and divisible by 8"
+        );
+        assert!(p_in.len() >= batch_size * d_head);
+        assert!(p_out.len() >= batch_size * d_head);
+
+        // Fast horizontal addition of a 256-bit AVX register in registers
+        #[inline]
+        unsafe fn hsum_avx2(v: __m256) -> f32 {
+            let vlow = _mm256_castps256_ps128(v);
+            let vhigh = _mm256_extractf128_ps(v, 1);
+            let v128 = _mm_add_ps(vlow, vhigh);
+            let shuf = _mm_movehdup_ps(v128);
+            let sums = _mm_add_ps(v128, shuf);
+            let shuf2 = _mm_movehl_ps(sums, sums);
+            let sums2 = _mm_add_ss(sums, shuf2);
+            _mm_cvtss_f32(sums2)
+        }
+
+        let scale = 1.0 / (d_head as f32).sqrt();
 
         for b in 0..batch_size {
             let curr_p = &p_in[b * d_head..(b + 1) * d_head];
             let out_slice = &mut p_out[b * d_head..(b + 1) * d_head];
 
-            let mut attn_out = [0.0f32; 64];
-            let mut s_mid = [0.0f32; 64];
-            let mut ffn_inter = [0.0f32; 512];
+            // Buffers sized for up to d_head=256 and ffn_dim=1024
+            let mut attn_out = [0.0f32; 256];
+            let mut s_mid = [0.0f32; 256];
+            let mut ffn_inter = [0.0f32; 1024];
 
+            // ---------------------------------------------------------------------
             // 1. Explicit AVX2 Attention Dot Product
-            let scale = 1.0 / (d_head as f32).sqrt();
+            // ---------------------------------------------------------------------
             if kv_len > 0 {
                 let k_cap = kv_len.min(128);
                 let mut scores = [0.0f32; 128];
@@ -211,19 +237,13 @@ impl CudaMicroBlockRunner {
                     let k_slice = &k_cache[k * d_head..(k + 1) * d_head];
                     let mut acc_v = _mm256_setzero_ps();
 
-                    for d in (0..dh_clamped).step_by(8) {
-                        unsafe {
-                            let p_vec = _mm256_loadu_ps(curr_p.as_ptr().add(d));
-                            let k_vec = _mm256_loadu_ps(k_slice.as_ptr().add(d));
-                            acc_v = _mm256_fmadd_ps(p_vec, k_vec, acc_v);
-                        }
+                    for d in (0..d_head).step_by(8) {
+                        let p_vec = _mm256_loadu_ps(curr_p.as_ptr().add(d));
+                        let k_vec = _mm256_loadu_ps(k_slice.as_ptr().add(d));
+                        acc_v = _mm256_fmadd_ps(p_vec, k_vec, acc_v);
                     }
 
-                    let mut tmp = [0.0f32; 8];
-                    unsafe {
-                        _mm256_storeu_ps(tmp.as_mut_ptr(), acc_v);
-                    }
-                    let dot = tmp.iter().sum::<f32>() * scale;
+                    let dot = hsum_avx2(acc_v) * scale;
                     scores[k] = dot;
                     if dot > max_score {
                         max_score = dot;
@@ -241,85 +261,114 @@ impl CudaMicroBlockRunner {
                 for k in 0..k_cap {
                     let w = scores[k] * inv_sum;
                     let v_slice = &v_cache[k * d_head..(k + 1) * d_head];
+                    let w_vec = _mm256_set1_ps(w);
 
-                    for d in (0..dh_clamped).step_by(8) {
-                        unsafe {
-                            let w_vec = _mm256_set1_ps(w);
-                            let v_vec = _mm256_loadu_ps(v_slice.as_ptr().add(d));
-                            let curr_attn = _mm256_loadu_ps(attn_out.as_ptr().add(d));
-                            let res = _mm256_fmadd_ps(w_vec, v_vec, curr_attn);
-                            _mm256_storeu_ps(attn_out.as_mut_ptr().add(d), res);
-                        }
+                    for d in (0..d_head).step_by(8) {
+                        let v_vec = _mm256_loadu_ps(v_slice.as_ptr().add(d));
+                        let curr_attn = _mm256_loadu_ps(attn_out.as_ptr().add(d));
+                        let res = _mm256_fmadd_ps(w_vec, v_vec, curr_attn);
+                        _mm256_storeu_ps(attn_out.as_mut_ptr().add(d), res);
                     }
                 }
             }
 
-            // 2. MicroRMSNorm 1 / SphereNorm
+            // ---------------------------------------------------------------------
+            // 2. MicroRMSNorm / Residual
+            // ---------------------------------------------------------------------
             if norm_strategy == 0 {
                 let mut sq_acc = _mm256_setzero_ps();
-                for d in (0..dh_clamped).step_by(8) {
-                    unsafe {
-                        let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
-                        sq_acc = _mm256_fmadd_ps(a_v, a_v, sq_acc);
-                    }
+                for d in (0..d_head).step_by(8) {
+                    let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
+                    sq_acc = _mm256_fmadd_ps(a_v, a_v, sq_acc);
                 }
-                let mut tmp = [0.0f32; 8];
-                unsafe {
-                    _mm256_storeu_ps(tmp.as_mut_ptr(), sq_acc);
-                }
-                let sq: f32 = tmp.iter().sum();
+                let sq = hsum_avx2(sq_acc);
                 let rms = (sq / (d_head as f32) + 1e-8).sqrt();
                 let alpha_inv_rms = alpha / rms;
+                let alpha_vec = _mm256_set1_ps(alpha_inv_rms);
 
-                for d in (0..dh_clamped).step_by(8) {
-                    unsafe {
-                        let alpha_vec = _mm256_set1_ps(alpha_inv_rms);
-                        let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
-                        let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
-                        let res = _mm256_fmadd_ps(a_v, alpha_vec, p_v);
-                        _mm256_storeu_ps(s_mid.as_mut_ptr().add(d), res);
-                    }
+                for d in (0..d_head).step_by(8) {
+                    let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
+                    let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
+                    let res = _mm256_fmadd_ps(a_v, alpha_vec, p_v);
+                    _mm256_storeu_ps(s_mid.as_mut_ptr().add(d), res);
                 }
             } else {
-                for d in 0..dh_clamped {
+                for d in 0..d_head {
                     s_mid[d] = curr_p[d] + attn_out[d];
                 }
             }
 
-            // 3. SwiGLU FFN via AVX2 Vector Intrinsics
-            for j in 0..ffn_clamped {
-                let mut tmp_g = [0.0f32; 8];
-                let mut tmp_u = [0.0f32; 8];
+            // ---------------------------------------------------------------------
+            // 3. SwiGLU FFN Outer-Product (Contiguous AVX2 Memory Sweeps)
+            // ---------------------------------------------------------------------
+            let mut gate_arr = [0.0f32; 1024];
+            let mut up_arr = [0.0f32; 1024];
 
-                unsafe {
-                    let mut gate_acc = _mm256_setzero_ps();
-                    let mut up_acc = _mm256_setzero_ps();
+            // Compute Gate and Up projections simultaneously using vector outer-products
+            for d in 0..d_head {
+                let m_v = _mm256_set1_ps(s_mid[d]);
+                let d_offset = d * ffn_dim;
 
-                    for d in (0..dh_clamped).step_by(8) {
-                        let m_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
-                        let wg_v = _mm256_loadu_ps(w_gate.as_ptr().add(d * ffn_dim + j));
-                        let wu_v = _mm256_loadu_ps(w_up.as_ptr().add(d * ffn_dim + j));
-                        gate_acc = _mm256_fmadd_ps(m_v, wg_v, gate_acc);
-                        up_acc = _mm256_fmadd_ps(m_v, wu_v, up_acc);
-                    }
+                for j in (0..ffn_dim).step_by(8) {
+                    let wg_v = _mm256_loadu_ps(w_gate.as_ptr().add(d_offset + j));
+                    let curr_g = _mm256_loadu_ps(gate_arr.as_ptr().add(j));
+                    _mm256_storeu_ps(
+                        gate_arr.as_mut_ptr().add(j),
+                        _mm256_fmadd_ps(m_v, wg_v, curr_g),
+                    );
 
-                    _mm256_storeu_ps(tmp_g.as_mut_ptr(), gate_acc);
-                    _mm256_storeu_ps(tmp_u.as_mut_ptr(), up_acc);
+                    let wu_v = _mm256_loadu_ps(w_up.as_ptr().add(d_offset + j));
+                    let curr_u = _mm256_loadu_ps(up_arr.as_ptr().add(j));
+                    _mm256_storeu_ps(
+                        up_arr.as_mut_ptr().add(j),
+                        _mm256_fmadd_ps(m_v, wu_v, curr_u),
+                    );
                 }
+            }
 
-                let gate: f32 = tmp_g.iter().sum();
-                let up: f32 = tmp_u.iter().sum();
+            // Element-wise Swish / SiLU activation and Gated Product
+            for j in 0..ffn_dim {
+                let gate = gate_arr[j];
+                let up = up_arr[j];
                 let swish = gate / (1.0 + (-gate).exp());
                 ffn_inter[j] = swish * up;
             }
 
-            // 4. Down projection & Store
-            for d in 0..dh_clamped {
-                let mut ffn_out_d = 0.0f32;
-                for j in 0..ffn_clamped {
-                    ffn_out_d += ffn_inter[j] * w_down[j * d_head + d];
+            // ---------------------------------------------------------------------
+            // 4. Down Projection Outer-Product & Output Store
+            // ---------------------------------------------------------------------
+            let mut down_arr = [0.0f32; 256];
+
+            // w_down is shape [ffn_dim, d_head] — contiguous memory is along `d`
+            for j in 0..ffn_dim {
+                let inter_v = _mm256_set1_ps(ffn_inter[j]);
+                let j_offset = j * d_head;
+
+                for d in (0..d_head).step_by(8) {
+                    let wd_v = _mm256_loadu_ps(w_down.as_ptr().add(j_offset + d));
+                    let curr_d = _mm256_loadu_ps(down_arr.as_ptr().add(d));
+                    _mm256_storeu_ps(
+                        down_arr.as_mut_ptr().add(d),
+                        _mm256_fmadd_ps(inter_v, wd_v, curr_d),
+                    );
                 }
-                out_slice[d] = (s_mid[d] + alpha * ffn_out_d).clamp(-100.0, 100.0);
+            }
+
+            // Apply scaling factor alpha, add residual, and clamp
+            for d in (0..d_head).step_by(8) {
+                let s_mid_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
+                let down_v = _mm256_loadu_ps(down_arr.as_ptr().add(d));
+                let alpha_v = _mm256_set1_ps(alpha);
+
+                // res = s_mid + alpha * down
+                let res = _mm256_fmadd_ps(down_v, alpha_v, s_mid_v);
+
+                // Clamp between -100.0 and 100.0
+                let min_v = _mm256_set1_ps(-100.0);
+                let max_v = _mm256_set1_ps(100.0);
+                let clamped = _mm256_min_ps(_mm256_max_ps(res, min_v), max_v);
+
+                _mm256_storeu_ps(out_slice.as_mut_ptr().add(d), clamped);
             }
         }
     }
