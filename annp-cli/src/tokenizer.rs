@@ -9,27 +9,32 @@ pub struct AnnpTokenizer {
 impl AnnpTokenizer {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Self {
         let p = path.as_ref();
+
+        // 1. Try specified path directly
         if p.exists() {
-            match Tokenizer::from_file(p) {
-                Ok(t) => {
-                    println!("Successfully loaded Hugging Face Tokenizer from: {:?}", p);
-                    Self { inner: Some(t) }
-                }
-                Err(e) => {
-                    println!(
-                        "Note: Loading HF JSON tokenizer from {:?} returned: {}. Initializing Tokenizer wrapper with fallback.",
-                        p, e
-                    );
-                    Self { inner: None }
-                }
+            if let Ok(t) = Tokenizer::from_file(p) {
+                println!("Successfully loaded Hugging Face Tokenizer from: {:?}", p);
+                return Self { inner: Some(t) };
             }
-        } else {
-            println!(
-                "Tokenizer file {:?} not found. Falling back to built-in byte/ASCII tokenizer.",
-                p
-            );
-            Self { inner: None }
         }
+
+        // 2. Try tokenizer.json in same directory if specified file is tokenizer.model
+        let json_path = p.with_extension("json");
+        if json_path.exists() {
+            if let Ok(t) = Tokenizer::from_file(&json_path) {
+                println!(
+                    "Successfully loaded Hugging Face JSON Tokenizer from: {:?}",
+                    json_path
+                );
+                return Self { inner: Some(t) };
+            }
+        }
+
+        println!(
+            "Notice: Tokenizer file {:?} is binary SentencePiece or unavailable. Initializing Byte-Level ASCII/UTF8 fallback tokenizer.",
+            p
+        );
+        Self { inner: None }
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {

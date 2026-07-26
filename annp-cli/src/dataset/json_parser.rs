@@ -31,16 +31,35 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
             }
         }
     } else {
-        let v: Value = serde_json::from_reader(reader)
-            .map_err(|e| candle_core::Error::Msg(format!("JSON Parse error: {}", e)))?;
-        if let Some(arr) = v.as_array() {
-            for item in arr {
-                if let Some(t) = parse_value_to_tensor(item, &tokenizer, d_model, device)? {
+        let content = std::fs::read_to_string(path.as_ref())
+            .map_err(|e| candle_core::Error::Msg(format!("Failed to read JSON dataset: {}", e)))?;
+
+        match serde_json::from_str::<Value>(&content) {
+            Ok(v) => {
+                if let Some(arr) = v.as_array() {
+                    for item in arr {
+                        if let Some(t) = parse_value_to_tensor(item, &tokenizer, d_model, device)? {
+                            tensors.push(t);
+                        }
+                    }
+                } else if let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)? {
                     tensors.push(t);
                 }
             }
-        } else if let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)? {
-            tensors.push(t);
+            Err(_) => {
+                // Auto-fallback: file is formatted as JSONL (line-delimited JSON objects)
+                for line in content.lines() {
+                    let l = line.trim();
+                    if l.is_empty() {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<Value>(l)
+                        && let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)?
+                    {
+                        tensors.push(t);
+                    }
+                }
+            }
         }
     }
 
