@@ -14,11 +14,11 @@ pub struct RoutingTable {
 impl RoutingTable {
     pub fn new(d_head: usize, neighbors: Vec<usize>) -> Self {
         let num_neighbors = neighbors.len();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let scale = (1.0 / (d_head as f32)).sqrt();
 
         let weights = (0..d_head * num_neighbors)
-            .map(|_| rng.gen_range(-scale..scale))
+            .map(|_| rng.random_range(-scale..scale))
             .collect();
 
         Self {
@@ -101,8 +101,8 @@ impl RoutingTable {
             sum_exp += e;
         }
 
-        let mut rng = rand::thread_rng();
-        let p: f32 = rng.gen_range(0.0..1.0);
+        let mut rng = rand::rng();
+        let p: f32 = rng.random_range(0.0..1.0);
         let mut cum_sum = 0.0f32;
         let inv_sum = 1.0 / (sum_exp + 1e-8);
 

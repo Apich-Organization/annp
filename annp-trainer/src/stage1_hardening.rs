@@ -29,28 +29,28 @@ impl Stage1HardeningTrainer {
         config: MicroBlockConfig,
     ) -> MicroBlockNode {
         let mut new_node = MicroBlockNode::new(new_node_id, config, 64);
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let alpha = 0.5f32;
         let epsilon_scale = 0.01f32;
 
         for (i, w_c) in new_node.w_gate.iter_mut().enumerate() {
             let w_a = node_a.w_gate[i];
             let w_b = node_b.w_gate[i];
-            let noise: f32 = rng.gen_range(-epsilon_scale..epsilon_scale);
+            let noise: f32 = rng.random_range(-epsilon_scale..epsilon_scale);
             *w_c = alpha * w_a + (1.0 - alpha) * w_b + noise;
         }
 
         for (i, w_c) in new_node.w_up.iter_mut().enumerate() {
             let w_a = node_a.w_up[i];
             let w_b = node_b.w_up[i];
-            let noise: f32 = rng.gen_range(-epsilon_scale..epsilon_scale);
+            let noise: f32 = rng.random_range(-epsilon_scale..epsilon_scale);
             *w_c = alpha * w_a + (1.0 - alpha) * w_b + noise;
         }
 
         for (i, w_c) in new_node.w_down.iter_mut().enumerate() {
             let w_a = node_a.w_down[i];
             let w_b = node_b.w_down[i];
-            let noise: f32 = rng.gen_range(-epsilon_scale..epsilon_scale);
+            let noise: f32 = rng.random_range(-epsilon_scale..epsilon_scale);
             *w_c = alpha * w_a + (1.0 - alpha) * w_b + noise;
         }
 

@@ -131,7 +131,7 @@ pub fn execute_train(
                 stage_epochs
             );
 
-            let stream = DatasetStream::new(dataset_path, dataset_fmt.clone(), d_model, &device)?;
+            let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
             let mut epoch_loss_sum = 0.0f32;
             let mut step_count = 0;
 

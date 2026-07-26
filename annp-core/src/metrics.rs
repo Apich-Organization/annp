@@ -1,5 +1,4 @@
 /// Mathematical metrics for Halting conditions and Attention Entropy evaluation.
-
 /// Compute L2 norm difference between input and output particle payloads: ||p_out - p_in||_2
 pub fn compute_delta_p(p_in: &[f32], p_out: &[f32]) -> f32 {
     assert_eq!(

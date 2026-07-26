@@ -24,10 +24,10 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
             if l.trim().is_empty() {
                 continue;
             }
-            if let Ok(v) = serde_json::from_str::<Value>(&l) {
-                if let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)? {
-                    tensors.push(t);
-                }
+            if let Ok(v) = serde_json::from_str::<Value>(&l)
+                && let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)?
+            {
+                tensors.push(t);
             }
         }
     } else {

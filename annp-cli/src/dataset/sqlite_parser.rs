@@ -20,56 +20,51 @@ pub fn load_sqlite_dataset<P: AsRef<Path>>(
         .prepare("SELECT content FROM dataset LIMIT 100")
         .or_else(|_| conn.prepare("SELECT text FROM dataset LIMIT 100"))
         .or_else(|_| conn.prepare("SELECT content FROM samples LIMIT 100"))
-    {
-        if let Ok(rows) = stmt.query_map([], |row| {
+        && let Ok(rows) = stmt.query_map([], |row| {
             let txt: String = row.get(0)?;
             Ok(txt)
-        }) {
-            for row in rows.flatten() {
-                if let Ok(t) = tokenizer.encode_to_tensor(&row, d_model, device) {
-                    tensors.push(t);
-                }
+        })
+    {
+        for row in rows.flatten() {
+            if let Ok(t) = tokenizer.encode_to_tensor(&row, d_model, device) {
+                tensors.push(t);
             }
         }
     }
 
-    if tensors.is_empty() {
-        if let Ok(mut stmt) = conn
+    if tensors.is_empty()
+        && let Ok(mut stmt) = conn
             .prepare("SELECT payload FROM embeddings LIMIT 100")
             .or_else(|_| conn.prepare("SELECT data FROM dataset LIMIT 100"))
-        {
-            let rows = stmt
-                .query_map([], |row| {
-                    let blob: Vec<u8> = row.get(0)?;
-                    Ok(blob)
-                })
-                .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+    {
+        let rows = stmt
+            .query_map([], |row| {
+                let blob: Vec<u8> = row.get(0)?;
+                Ok(blob)
+            })
+            .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
 
-            let mut current_seq = Vec::new();
-            let seq_len = 8;
+        let mut current_seq = Vec::new();
+        let seq_len = 8;
 
-            for row in rows.flatten() {
-                let floats: Vec<f32> = row
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-                    .collect();
+        for row in rows.flatten() {
+            let floats: Vec<f32> = row
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
 
-                if floats.len() >= d_model {
-                    current_seq.extend_from_slice(&floats[..d_model]);
-                } else {
-                    let mut padded = floats;
-                    padded.resize(d_model, 0.0);
-                    current_seq.extend_from_slice(&padded);
-                }
+            if floats.len() >= d_model {
+                current_seq.extend_from_slice(&floats[..d_model]);
+            } else {
+                let mut padded = floats;
+                padded.resize(d_model, 0.0);
+                current_seq.extend_from_slice(&padded);
+            }
 
-                if current_seq.len() == seq_len * d_model {
-                    let t = Tensor::from_vec(
-                        std::mem::take(&mut current_seq),
-                        (seq_len, d_model),
-                        device,
-                    )?;
-                    tensors.push(t);
-                }
+            if current_seq.len() == seq_len * d_model {
+                let t =
+                    Tensor::from_vec(std::mem::take(&mut current_seq), (seq_len, d_model), device)?;
+                tensors.push(t);
             }
         }
     }

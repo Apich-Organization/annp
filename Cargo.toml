@@ -14,14 +14,14 @@ edition = "2024"
 authors = ["ANNP Team"]
 
 [workspace.dependencies]
-candle-core = "0.8"
-candle-nn = "0.8"
+candle-core = "0.11"
+candle-nn = "0.11"
 half = "2.4"
-rand = "0.8"
+rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 log = "0.4"
 env_logger = "0.11"
 dtact = "0.2"
-tokenizers = "0.21"
+tokenizers = "0.23"

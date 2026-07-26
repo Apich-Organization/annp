@@ -33,19 +33,19 @@ impl AnnpTokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        if let Some(ref t) = self.inner {
-            if let Ok(encoding) = t.encode(text, true) {
-                return encoding.get_ids().to_vec();
-            }
+        if let Some(ref t) = self.inner
+            && let Ok(encoding) = t.encode(text, true)
+        {
+            return encoding.get_ids().to_vec();
         }
         text.bytes().map(|b| b as u32).collect()
     }
 
     pub fn decode(&self, ids: &[u32]) -> String {
-        if let Some(ref t) = self.inner {
-            if let Ok(text) = t.decode(ids, true) {
-                return text;
-            }
+        if let Some(ref t) = self.inner
+            && let Ok(text) = t.decode(ids, true)
+        {
+            return text;
         }
         let bytes: Vec<u8> = ids.iter().map(|&id| (id & 0xFF) as u8).collect();
         String::from_utf8_lossy(&bytes).to_string()

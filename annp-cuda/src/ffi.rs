@@ -216,9 +216,9 @@ impl CudaMicroBlockRunner {
         {
             #[cfg(target_arch = "x86_64")]
             let is_x86_avx2 = d_head <= MAX_D_HEAD
-                && d_head % 8 == 0
+                && d_head.is_multiple_of(8)
                 && ffn_dim <= MAX_FFN_DIM
-                && ffn_dim % 8 == 0
+                && ffn_dim.is_multiple_of(8)
                 && is_x86_feature_detected!("avx2")
                 && is_x86_feature_detected!("fma");
 
@@ -288,11 +288,11 @@ impl CudaMicroBlockRunner {
             use std::arch::x86_64::*;
 
             assert!(
-                d_head <= MAX_D_HEAD && d_head % 8 == 0,
+                d_head <= MAX_D_HEAD && d_head.is_multiple_of(8),
                 "d_head must be <= MAX_D_HEAD and divisible by 8"
             );
             assert!(
-                ffn_dim <= MAX_FFN_DIM && ffn_dim % 8 == 0,
+                ffn_dim <= MAX_FFN_DIM && ffn_dim.is_multiple_of(8),
                 "ffn_dim must be <= MAX_FFN_DIM and divisible by 8"
             );
             assert!(p_in.len() >= batch_size * d_head);
@@ -909,10 +909,9 @@ impl CudaParticleRouter {
             // 3. Halting logic
             let hdr = headers[b];
             let mut is_halted = hdr.is_halted();
-            if !is_halted && hdr.hop_count >= min_hop {
-                if delta_p < epsilon_p && entropy < epsilon_h {
-                    is_halted = true;
-                }
+            if !is_halted && hdr.hop_count >= min_hop && delta_p < epsilon_p && entropy < epsilon_h
+            {
+                is_halted = true;
             }
             halting_flags[b] = is_halted;
         }

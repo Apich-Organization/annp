@@ -37,17 +37,17 @@ impl MicroBlockNode {
         let d_head = config.d_head;
         let ffn_dim = d_head * config.ffn_expansion;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
 
         let w_gate = (0..d_head * ffn_dim)
-            .map(|_| rng.gen_range(-scale..scale))
+            .map(|_| rng.random_range(-scale..scale))
             .collect();
         let w_up = (0..d_head * ffn_dim)
-            .map(|_| rng.gen_range(-scale..scale))
+            .map(|_| rng.random_range(-scale..scale))
             .collect();
         let w_down = (0..ffn_dim * d_head)
-            .map(|_| rng.gen_range(-scale..scale))
+            .map(|_| rng.random_range(-scale..scale))
             .collect();
 
         let v_gate = vec![0.0f32; d_head * ffn_dim];

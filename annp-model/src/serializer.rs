@@ -16,7 +16,7 @@ pub struct EgressSerializer {
 impl EgressSerializer {
     pub fn new(d_head: usize, num_shards: usize) -> Self {
         let d_model = d_head * num_shards;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let scale = (2.0 / d_model as f64).sqrt() as f32;
 
         let mut w_egress = vec![0.0f32; d_model * d_model];
@@ -25,7 +25,7 @@ impl EgressSerializer {
                 if i == j {
                     w_egress[i * d_model + j] = 1.0; // Identity initialization
                 } else {
-                    w_egress[i * d_model + j] = rng.gen_range(-scale * 0.05..scale * 0.05);
+                    w_egress[i * d_model + j] = rng.random_range(-scale * 0.05..scale * 0.05);
                 }
             }
         }
