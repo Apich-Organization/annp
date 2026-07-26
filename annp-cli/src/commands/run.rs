@@ -1,5 +1,6 @@
 use crate::checkpoint::ModelCheckpoint;
 use crate::config::AnnpTomlConfig;
+use crate::tokenizer::AnnpTokenizer;
 use annp_model::ANNPModel;
 use annp_trainer::Stage1HardeningTrainer;
 use candle_core::Tensor;
@@ -47,22 +48,24 @@ pub fn execute_run(
     }
 
     let d_model = num_shards * model.config.d_head;
-    let seq_len = 16;
 
-    // Parse input text vector or generate random input
-    let input_tensor = if let Some(prompt) = input_text {
-        println!("Parsing input prompt: \"{}\"", prompt);
-        let mut flat = Vec::with_capacity(seq_len * d_model);
-        let bytes = prompt.as_bytes();
-        for t in 0..seq_len {
-            for d in 0..d_model {
-                let char_byte = bytes[(t * d_model + d) % bytes.len().max(1)] as f32;
-                flat.push((char_byte / 255.0f32) * 2.0 - 1.0);
-            }
-        }
-        Tensor::from_vec(flat, (seq_len, d_model), &device)?
+    // Load Hugging Face / SentencePiece Tokenizer from tokenizer.model
+    let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
+
+    // Parse input text using AnnpTokenizer or generate random input
+    let (input_tensor, seq_len) = if let Some(ref prompt) = input_text {
+        println!("Parsing input prompt with AnnpTokenizer: \"{}\"", prompt);
+        let ids = tokenizer.encode(prompt);
+        println!("Encoded Token IDs (Count {}): {:?}", ids.len(), ids);
+        let tensor = tokenizer.encode_to_tensor(prompt, d_model, &device)?;
+        let s_len = tensor.dim(0)?;
+        (tensor, s_len)
     } else {
-        Tensor::randn(0.0f32, 1.0f32, (seq_len, d_model), &device)?
+        let default_seq_len = 16;
+        (
+            Tensor::randn(0.0f32, 1.0f32, (default_seq_len, d_model), &device)?,
+            default_seq_len,
+        )
     };
 
     let run_mode_str = if continual_mode {
@@ -96,6 +99,19 @@ pub fn execute_run(
     let particles_per_sec = total_particles_processed as f64 / elapsed.as_secs_f64();
 
     println!("Output Sequence Tensor Shape: {:?}", last_output.shape());
+
+    if input_text.is_some() {
+        let output_vec = last_output.flatten_all()?.to_vec1::<f32>()?;
+        let mut decoded_ids = Vec::with_capacity(seq_len);
+        for t in 0..seq_len {
+            let row_slice = &output_vec[t * d_model..(t + 1) * d_model];
+            let mean_val: f32 = row_slice.iter().sum::<f32>() / d_model as f32;
+            let token_id = (mean_val.abs() * 1000.0) as u32;
+            decoded_ids.push(token_id);
+        }
+        let decoded_text = tokenizer.decode(&decoded_ids);
+        println!("Decoded ANNP Output Sequence Text: \"{}\"", decoded_text);
+    }
 
     if continual_mode {
         println!(

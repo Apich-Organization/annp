@@ -1,3 +1,4 @@
+use crate::tokenizer::AnnpTokenizer;
 use candle_core::{Device, Result, Tensor};
 use std::path::Path;
 
@@ -12,24 +13,38 @@ pub fn load_csv_dataset<P: AsRef<Path>>(
         .from_path(path.as_ref())
         .map_err(|e| candle_core::Error::Msg(format!("CSV Open error: {}", e)))?;
 
-    let mut rows = Vec::new();
+    let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
+    let mut tensors = Vec::new();
+    let mut float_rows = Vec::new();
+
     for result in reader.records() {
         let record = result.map_err(|e| candle_core::Error::Msg(e.to_string()))?;
-        let mut float_row = Vec::new();
+        let mut row_text = String::new();
+        let mut row_floats = Vec::new();
+
         for field in record.iter() {
-            if let Ok(val) = field.trim().parse::<f32>() {
-                float_row.push(val);
+            let trimmed = field.trim();
+            if let Ok(val) = trimmed.parse::<f32>() {
+                row_floats.push(val);
+            } else if !trimmed.is_empty() {
+                if !row_text.is_empty() {
+                    row_text.push(' ');
+                }
+                row_text.push_str(trimmed);
             }
         }
-        if !float_row.is_empty() {
-            rows.push(float_row);
+
+        if !row_text.is_empty() {
+            if let Ok(t) = tokenizer.encode_to_tensor(&row_text, d_model, device) {
+                tensors.push(t);
+            }
+        } else if !row_floats.is_empty() {
+            float_rows.push(row_floats);
         }
     }
 
-    let mut tensors = Vec::new();
-    let chunk_size = 8; // Group 8 sequence rows per sequence tensor
-
-    for chunk in rows.chunks(chunk_size) {
+    let chunk_size = 8;
+    for chunk in float_rows.chunks(chunk_size) {
         let seq_len = chunk.len();
         let mut flat = Vec::with_capacity(seq_len * d_model);
 

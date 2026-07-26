@@ -31,7 +31,6 @@
 ///    - Generates multi-frequency harmonic wave resonances over broad time domain [-10\pi, 10\pi]:
 ///      $y(t, d) = \sin(0.1t + 0.05d) + 0.35 \sin(2.5t + 3d) + 0.2 \sin(0.2t \cdot d)$
 ///
-
 pub mod csv_parser;
 pub mod json_parser;
 pub mod sqlite_parser;

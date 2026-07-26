@@ -133,10 +133,10 @@ fn test_particle_router_and_halting() {
         batch_size,
         d_head,
         num_neighbors,
-        1.0,   // temperature
-        1e-2,  // epsilon_p
-        10.0,  // epsilon_h
-        10,    // min_hop
+        1.0,  // temperature
+        1e-2, // epsilon_p
+        10.0, // epsilon_h
+        10,   // min_hop
         &headers,
     );
 

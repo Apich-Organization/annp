@@ -2,6 +2,7 @@ mod checkpoint;
 mod commands;
 mod config;
 mod dataset;
+pub mod tokenizer;
 
 use clap::{Parser, Subcommand};
 use commands::{execute_export, execute_init, execute_run, execute_train};

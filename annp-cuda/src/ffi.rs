@@ -532,7 +532,9 @@ impl CudaMicroBlockRunner {
             // 1. Attention
             let mut attn_out = vec![0.0f32; d_head];
             if kv_len > 0 && !k_cache.is_empty() && !v_cache.is_empty() {
-                let actual_kv = kv_len.min(k_cache.len() / d_head).min(v_cache.len() / d_head);
+                let actual_kv = kv_len
+                    .min(k_cache.len() / d_head)
+                    .min(v_cache.len() / d_head);
                 if actual_kv > 0 {
                     let mut scores = vec![0.0f32; actual_kv];
                     let mut max_score = f32::NEG_INFINITY;
@@ -834,7 +836,11 @@ impl CudaParticleRouter {
         headers: &[ParticleCudaHeader],
     ) {
         let inv_temp = 1.0f32 / temperature.max(1e-4f32);
-        let noise_base = if num_neighbors > 0 { 0.05f32 / (num_neighbors as f32) } else { 0.0f32 };
+        let noise_base = if num_neighbors > 0 {
+            0.05f32 / (num_neighbors as f32)
+        } else {
+            0.0f32
+        };
 
         for b in 0..batch_size {
             let pin_slice = &p_in[b * d_head..(b + 1) * d_head];
@@ -924,7 +930,14 @@ impl CudaParticleAggregator {
         num_particles: usize,
         d_head: usize,
     ) {
-        Self::execute_prefetch_with_stream(src_particles, dst_buffer, active_indices, num_particles, d_head, None);
+        Self::execute_prefetch_with_stream(
+            src_particles,
+            dst_buffer,
+            active_indices,
+            num_particles,
+            d_head,
+            None,
+        );
     }
 
     pub fn execute_prefetch_with_stream(
@@ -977,10 +990,11 @@ impl CudaParticleAggregator {
 
         #[cfg(cuda_available)]
         {
-            let indices_i32: Option<Vec<i32>> = active_indices.map(|idxs| {
-                idxs.iter().map(|&i| i as i32).collect()
-            });
-            let idx_ptr = indices_i32.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+            let indices_i32: Option<Vec<i32>> =
+                active_indices.map(|idxs| idxs.iter().map(|&i| i as i32).collect());
+            let idx_ptr = indices_i32
+                .as_ref()
+                .map_or(std::ptr::null(), |v| v.as_ptr());
 
             unsafe {
                 launch_particle_prefetch_aggregate(

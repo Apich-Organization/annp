@@ -1,3 +1,4 @@
+use crate::tokenizer::AnnpTokenizer;
 use candle_core::{Device, Result, Tensor};
 use serde_json::Value;
 use std::fs::File;
@@ -15,6 +16,7 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
         .map_err(|e| candle_core::Error::Msg(format!("Failed to open JSON dataset: {}", e)))?;
     let reader = BufReader::new(file);
     let mut tensors = Vec::new();
+    let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
 
     if is_jsonl {
         for line in reader.lines() {
@@ -23,7 +25,7 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<Value>(&l) {
-                if let Some(t) = parse_value_to_tensor(&v, d_model, device)? {
+                if let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)? {
                     tensors.push(t);
                 }
             }
@@ -33,24 +35,38 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
             .map_err(|e| candle_core::Error::Msg(format!("JSON Parse error: {}", e)))?;
         if let Some(arr) = v.as_array() {
             for item in arr {
-                if let Some(t) = parse_value_to_tensor(item, d_model, device)? {
+                if let Some(t) = parse_value_to_tensor(item, &tokenizer, d_model, device)? {
                     tensors.push(t);
                 }
             }
-        } else if let Some(t) = parse_value_to_tensor(&v, d_model, device)? {
+        } else if let Some(t) = parse_value_to_tensor(&v, &tokenizer, d_model, device)? {
             tensors.push(t);
         }
     }
 
     if tensors.is_empty() {
-        // Fallback simulated synthetic data if empty
         tensors.push(Tensor::randn(0.0f32, 1.0f32, (8, d_model), device)?);
     }
 
     Ok(tensors)
 }
 
-fn parse_value_to_tensor(val: &Value, d_model: usize, device: &Device) -> Result<Option<Tensor>> {
+fn parse_value_to_tensor(
+    val: &Value,
+    tokenizer: &AnnpTokenizer,
+    d_model: usize,
+    device: &Device,
+) -> Result<Option<Tensor>> {
+    if let Some(text) = val
+        .get("input_text")
+        .or_else(|| val.get("text"))
+        .or_else(|| val.get("content"))
+        .and_then(|v| v.as_str())
+    {
+        let t = tokenizer.encode_to_tensor(text, d_model, device)?;
+        return Ok(Some(t));
+    }
+
     if let Some(array) = val
         .get("embeddings")
         .or_else(|| val.get("tokens"))
