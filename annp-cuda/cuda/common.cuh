@@ -19,11 +19,12 @@
     } while (0)
 
 // Helper: Safe dynamic allocation fallback if cudaMallocAsync is unsupported
-inline cudaError_t safe_cuda_malloc_async(void** ptr, size_t size, cudaStream_t stream) {
-    cudaError_t err = cudaMallocAsync(ptr, size, stream);
+template <typename T>
+inline cudaError_t safe_cuda_malloc_async(T** ptr, size_t size, cudaStream_t stream) {
+    cudaError_t err = cudaMallocAsync((void**)ptr, size, stream);
     if (err != cudaSuccess) {
         cudaGetLastError(); // Clear error state
-        err = cudaMalloc(ptr, size);
+        err = cudaMalloc((void**)ptr, size);
     }
     return err;
 }
