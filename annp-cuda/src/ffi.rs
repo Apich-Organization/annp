@@ -706,7 +706,7 @@ impl CudaParticleRouter {
         min_hop: u16,
         headers: &[ParticleCudaHeader],
     ) {
-        Self::execute_routing_with_stream(
+        Self::execute_routing_with_stream_device(
             p_in,
             p_out,
             routing_table,
@@ -722,6 +722,7 @@ impl CudaParticleRouter {
             min_hop,
             headers,
             None,
+            true,
         );
     }
 
@@ -741,6 +742,45 @@ impl CudaParticleRouter {
         min_hop: u16,
         headers: &[ParticleCudaHeader],
         stream: Option<&CudaStreamManager>,
+    ) {
+        Self::execute_routing_with_stream_device(
+            p_in,
+            p_out,
+            routing_table,
+            gumbel_noise,
+            chosen_neighbor,
+            halting_flags,
+            batch_size,
+            d_head,
+            num_neighbors,
+            temperature,
+            epsilon_p,
+            epsilon_h,
+            min_hop,
+            headers,
+            stream,
+            true,
+        );
+    }
+
+    #[allow(unused_variables)]
+    pub fn execute_routing_with_stream_device(
+        p_in: &[f32],
+        p_out: &[f32],
+        routing_table: &[f32],
+        gumbel_noise: &[f32],
+        chosen_neighbor: &mut [usize],
+        halting_flags: &mut [bool],
+        batch_size: usize,
+        d_head: usize,
+        num_neighbors: usize,
+        temperature: f32,
+        epsilon_p: f32,
+        epsilon_h: f32,
+        min_hop: u16,
+        headers: &[ParticleCudaHeader],
+        stream: Option<&CudaStreamManager>,
+        use_cuda: bool,
     ) {
         assert!(batch_size <= i32::MAX as usize);
         assert!(d_head <= i32::MAX as usize);
@@ -804,58 +844,57 @@ impl CudaParticleRouter {
             headers.len()
         );
 
-        let _stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+        if use_cuda {
+            #[cfg(cuda_available)]
+            {
+                let stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+                let mut chosen_i32 = vec![0i32; batch_size];
+                let mut halting_b = vec![false; batch_size];
 
-        #[cfg(cuda_available)]
-        {
-            let mut chosen_i32 = vec![0i32; batch_size];
-            let mut halting_b = vec![false; batch_size];
+                unsafe {
+                    launch_particle_router(
+                        p_in.as_ptr(),
+                        p_out.as_ptr(),
+                        routing_table.as_ptr(),
+                        gumbel_noise.as_ptr(),
+                        chosen_i32.as_mut_ptr(),
+                        halting_b.as_mut_ptr(),
+                        batch_size as i32,
+                        d_head as i32,
+                        num_neighbors as i32,
+                        temperature,
+                        epsilon_p,
+                        epsilon_h,
+                        min_hop as i32,
+                        headers.as_ptr(),
+                        stream_ptr,
+                    );
+                }
 
-            unsafe {
-                launch_particle_router(
-                    p_in.as_ptr(),
-                    p_out.as_ptr(),
-                    routing_table.as_ptr(),
-                    gumbel_noise.as_ptr(),
-                    chosen_i32.as_mut_ptr(),
-                    halting_b.as_mut_ptr(),
-                    batch_size as i32,
-                    d_head as i32,
-                    num_neighbors as i32,
-                    temperature,
-                    epsilon_p,
-                    epsilon_h,
-                    min_hop as i32,
-                    headers.as_ptr(),
-                    _stream_ptr,
-                );
+                for (dst, &src) in chosen_neighbor.iter_mut().zip(chosen_i32.iter()) {
+                    *dst = src.max(0) as usize;
+                }
+                halting_flags[..batch_size].copy_from_slice(&halting_b[..batch_size]);
+                return;
             }
-
-            for (dst, &src) in chosen_neighbor.iter_mut().zip(chosen_i32.iter()) {
-                *dst = src.max(0) as usize;
-            }
-            halting_flags[..batch_size].copy_from_slice(&halting_b[..batch_size]);
         }
 
-        #[cfg(not(cuda_available))]
-        {
-            Self::execute_routing_fallback(
-                p_in,
-                p_out,
-                routing_table,
-                gumbel_noise,
-                chosen_neighbor,
-                halting_flags,
-                batch_size,
-                d_head,
-                num_neighbors,
-                temperature,
-                epsilon_p,
-                epsilon_h,
-                min_hop,
-                headers,
-            );
-        }
+        Self::execute_routing_fallback(
+            p_in,
+            p_out,
+            routing_table,
+            gumbel_noise,
+            chosen_neighbor,
+            halting_flags,
+            batch_size,
+            d_head,
+            num_neighbors,
+            temperature,
+            epsilon_p,
+            epsilon_h,
+            min_hop,
+            headers,
+        );
     }
 
     fn execute_routing_fallback(
@@ -968,13 +1007,14 @@ impl CudaParticleAggregator {
         num_particles: usize,
         d_head: usize,
     ) {
-        Self::execute_prefetch_with_stream(
+        Self::execute_prefetch_with_stream_device(
             src_particles,
             dst_buffer,
             active_indices,
             num_particles,
             d_head,
             None,
+            true,
         );
     }
 
@@ -985,6 +1025,27 @@ impl CudaParticleAggregator {
         num_particles: usize,
         d_head: usize,
         stream: Option<&CudaStreamManager>,
+    ) {
+        Self::execute_prefetch_with_stream_device(
+            src_particles,
+            dst_buffer,
+            active_indices,
+            num_particles,
+            d_head,
+            stream,
+            true,
+        );
+    }
+
+    #[allow(unused_variables)]
+    pub fn execute_prefetch_with_stream_device(
+        src_particles: &[f32],
+        dst_buffer: &mut [f32],
+        active_indices: Option<&[usize]>,
+        num_particles: usize,
+        d_head: usize,
+        stream: Option<&CudaStreamManager>,
+        use_cuda: bool,
     ) {
         if num_particles == 0 || d_head == 0 {
             return;
@@ -1024,38 +1085,37 @@ impl CudaParticleAggregator {
             );
         }
 
-        let _stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+        if use_cuda {
+            #[cfg(cuda_available)]
+            {
+                let stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+                let indices_i32: Option<Vec<i32>> =
+                    active_indices.map(|idxs| idxs.iter().map(|&i| i as i32).collect());
+                let idx_ptr = indices_i32
+                    .as_ref()
+                    .map_or(std::ptr::null(), |v| v.as_ptr());
 
-        #[cfg(cuda_available)]
-        {
-            let indices_i32: Option<Vec<i32>> =
-                active_indices.map(|idxs| idxs.iter().map(|&i| i as i32).collect());
-            let idx_ptr = indices_i32
-                .as_ref()
-                .map_or(std::ptr::null(), |v| v.as_ptr());
-
-            unsafe {
-                launch_particle_prefetch_aggregate(
-                    src_particles.as_ptr(),
-                    dst_buffer.as_mut_ptr(),
-                    idx_ptr,
-                    num_particles as i32,
-                    d_head as i32,
-                    _stream_ptr,
-                );
+                unsafe {
+                    launch_particle_prefetch_aggregate(
+                        src_particles.as_ptr(),
+                        dst_buffer.as_mut_ptr(),
+                        idx_ptr,
+                        num_particles as i32,
+                        d_head as i32,
+                        stream_ptr,
+                    );
+                }
+                return;
             }
         }
 
-        #[cfg(not(cuda_available))]
-        {
-            Self::execute_prefetch_fallback(
-                src_particles,
-                dst_buffer,
-                active_indices,
-                num_particles,
-                d_head,
-            );
-        }
+        Self::execute_prefetch_fallback(
+            src_particles,
+            dst_buffer,
+            active_indices,
+            num_particles,
+            d_head,
+        );
     }
 
     fn execute_prefetch_fallback(
