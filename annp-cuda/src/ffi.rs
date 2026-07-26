@@ -31,7 +31,7 @@ impl ParticleCudaHeader {
 }
 
 #[cfg(cuda_available)]
-extern "C" {
+unsafe extern "C" {
     pub fn launch_fused_micro_block(
         p_in: *const f32,
         k_cache: *const f32,

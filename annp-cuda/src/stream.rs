@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 
 #[cfg(cuda_available)]
-extern "C" {
+unsafe extern "C" {
     fn cudaStreamCreate(stream: *mut *mut c_void) -> i32;
     fn cudaStreamDestroy(stream: *mut c_void) -> i32;
     fn cudaStreamSynchronize(stream: *mut c_void) -> i32;
