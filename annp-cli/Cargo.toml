@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 
 [features]
-default = ["cuda"]
+default = []
 cuda = ["annp-model/cuda", "annp-cuda/cuda", "annp-trainer/cuda"]
 
 [dependencies]
@@ -25,3 +25,4 @@ rand.workspace = true
 log.workspace = true
 env_logger = "0.11"
 thiserror.workspace = true
+dtact.workspace = true

@@ -287,6 +287,8 @@ fn main() {
                 }
             }
         }
-        println!("cargo:warning=CUDA feature requested but nvcc compilation failed or nvcc was not found. Falling back to Rust CPU runtime.");
+        println!(
+            "cargo:warning=CUDA feature requested but nvcc compilation failed or nvcc was not found. Falling back to Rust CPU runtime."
+        );
     }
 }

@@ -4,9 +4,41 @@ use crate::serializer::EgressSerializer;
 use crate::topology::TopologyGrid;
 use annp_core::{MicroBlockConfig, Particle};
 use candle_core::{Device, Result, Tensor};
-use rayon::prelude::*;
+use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Full ANNP Architecture Pipeline.
+static DTACT_INIT: Once = Once::new();
+
+/// Initializes the global Dtact runtime exactly once per process.
+pub fn init_dtact_runtime() {
+    DTACT_INIT.call_once(|| {
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let runtime = dtact::GLOBAL_RUNTIME.get_or_init(|| {
+            let scheduler = dtact::dta_scheduler::DtaScheduler::new(
+                workers,
+                dtact::dta_scheduler::TopologyMode::P2PMesh,
+            );
+            let pool = dtact::memory_management::ContextPool::new(
+                512,
+                524_288,
+                dtact::memory_management::SafetyLevel::Safety0,
+                0,
+            )
+            .expect("dtact runtime init failed");
+            dtact::Runtime {
+                scheduler,
+                pool,
+                started: core::sync::atomic::AtomicBool::new(false),
+                shutdown: core::sync::atomic::AtomicBool::new(false),
+            }
+        });
+        runtime.start();
+    });
+}
+
+/// Full ANNP Architecture Pipeline with dtact coroutine/work-stealing lock-free scheduling.
 pub struct ANNPModel {
     pub config: MicroBlockConfig,
     pub num_nodes: usize,
@@ -27,6 +59,8 @@ impl ANNPModel {
         config: MicroBlockConfig,
         device: Device,
     ) -> Self {
+        init_dtact_runtime();
+
         let d_head = config.d_head;
         let scattering = TokenScattering::new(num_shards, d_head, 0.1);
         let topology = TopologyGrid::new(num_nodes, d_head, 4);
@@ -52,21 +86,20 @@ impl ANNPModel {
         }
     }
 
-    /// Forward pass through ANNP P2P Mesh with batch-wise state reset and lock-free asynchronous particle routing
+    /// Forward pass through ANNP P2P Mesh with lock-free dtact coroutine mesh scheduling
     pub fn forward(&mut self, embeddings: &Tensor) -> Result<Tensor> {
         // Reset node KV Caches before each forward batch to prevent cross-batch historical state pollution
-        self.nodes.par_iter_mut().for_each(|node| {
+        for node in self.nodes.iter_mut() {
             node.k_cache.clear();
             node.v_cache.clear();
             node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
-        });
+        }
 
         let (seq_len, _) = embeddings.dims2()?;
         let initial_particles = self
             .scattering
             .scatter_embeddings(embeddings, &self.config)?;
 
-        // Clear existing queues without dropping capacity
         for q in self.node_queues.iter_mut() {
             q.clear();
         }
@@ -97,21 +130,59 @@ impl ANNPModel {
                 q.clear();
             }
 
-            // Extract node queues in parallel
             for node_id in 0..self.num_nodes {
                 curr_batches[node_id].clear();
                 std::mem::swap(&mut curr_batches[node_id], &mut self.node_queues[node_id]);
             }
 
-            // High-throughput CPU multi-core parallel execution across all Micro-Block nodes via Rayon
-            self.nodes
-                .par_iter_mut()
-                .zip(curr_batches.par_iter_mut())
-                .for_each(|(node, batch)| {
-                    if !batch.is_empty() {
-                        node.process_batch(batch);
-                    }
-                });
+            let active_counter = AtomicUsize::new(0);
+            let counter_ptr = &active_counter as *const AtomicUsize as usize;
+
+            // High-throughput dtact coroutine P2P mesh scheduling pass using dtact::spawn(async move ...)
+            for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
+                if !batch.is_empty() {
+                    active_counter.fetch_add(1, Ordering::Relaxed);
+                    let node_addr = node as *mut MicroBlockNode as usize;
+                    let batch_ptr = batch as *mut Vec<Particle> as usize;
+
+                    let _handle = dtact::spawn(async move {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            core::arch::asm!(
+                                "sub rsp, 8",
+                                "mov dword ptr [rsp], 0x1F80",
+                                "ldmxcsr [rsp]",
+                                "add rsp, 8",
+                                options(nostack, preserves_flags)
+                            );
+                        }
+
+                        #[cfg(target_arch = "aarch64")]
+                        unsafe {
+                            core::arch::asm!(
+                                "mrs {x}, fpcr",
+                                "bic {x}, {x}, #(0x1F << 8)",
+                                "msr fpcr, {x}",
+                                x = out(reg) _,
+                                options(nostack, preserves_flags)
+                            );
+                        }
+
+                        let node_ptr = node_addr as *mut MicroBlockNode;
+                        let b_ptr = batch_ptr as *mut Vec<Particle>;
+                        let c_ptr = counter_ptr as *const AtomicUsize;
+                        unsafe {
+                            (*node_ptr).process_batch(&mut *b_ptr);
+                            (*c_ptr).fetch_sub(1, Ordering::Release);
+                        }
+                    });
+                }
+            }
+
+            // Spin lock waiting for all dtact coroutine fibers in this step to finish processing
+            while active_counter.load(Ordering::Acquire) > 0 {
+                std::hint::spin_loop();
+            }
 
             // Push-routing decision for output particles with P2P Backpressure penalty
             for node_id in 0..self.num_nodes {

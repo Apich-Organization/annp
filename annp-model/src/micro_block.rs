@@ -1,5 +1,5 @@
 use annp_core::{
-    compute_attention_entropy, compute_delta_p, MicroBlockConfig, NormStrategy, Particle,
+    MicroBlockConfig, NormStrategy, Particle, compute_attention_entropy, compute_delta_p,
 };
 use annp_cuda::CudaMicroBlockRunner;
 use rand::Rng;
@@ -76,16 +76,18 @@ impl MicroBlockNode {
         }
     }
 
-    /// Update KV Cache with new incoming particle (push FIFO)
+    /// Update KV Cache with new incoming particle (push FIFO safely)
     pub fn update_kv_cache(&mut self, particle: &Particle) {
         let d_head = self.config.d_head;
         assert_eq!(particle.payload.len(), d_head);
 
-        let curr_len = self.k_cache.len() / d_head;
-        if curr_len >= self.max_kv_len {
-            // Evict oldest KV entry
-            self.k_cache.drain(0..d_head);
-            self.v_cache.drain(0..d_head);
+        if self.max_kv_len > 0 {
+            let curr_len = self.k_cache.len() / d_head;
+            if curr_len >= self.max_kv_len && self.k_cache.len() >= d_head {
+                // Evict oldest KV entry safely
+                self.k_cache.drain(0..d_head);
+                self.v_cache.drain(0..d_head);
+            }
         }
 
         self.k_cache.extend_from_slice(&particle.payload);

@@ -1,6 +1,6 @@
 use crate::checkpoint::ModelCheckpoint;
 use crate::config::AnnpTomlConfig;
-use crate::dataset::{load_dataset, DatasetFormat};
+use crate::dataset::{DatasetFormat, DatasetStream};
 use annp_model::ANNPModel;
 use annp_trainer::{Stage0WaveTrainer, Stage1HardeningTrainer};
 use candle_core::Device;
@@ -17,7 +17,9 @@ pub fn select_device(device_str: &str) -> Device {
             println!("Selected Compute Device: Cuda(0) [NVIDIA High-Performance GPU Engine]");
             return cuda_dev;
         } else if force_cuda {
-            println!("Warning: CUDA device requested but CUDA initialization failed. Falling back to CPU.");
+            println!(
+                "Warning: CUDA device requested but CUDA initialization failed. Falling back to CPU."
+            );
         }
     }
 
@@ -113,46 +115,54 @@ pub fn execute_train(
         );
         println!("------------------------------------------------------------");
 
-        // Parse dataset path and format dynamically using DatasetFormat::parse
         let dataset_path = stage_cfg.dataset_path.as_deref().unwrap_or("synthetic");
         let format_str = stage_cfg.dataset_format.as_deref().unwrap_or("synthetic");
         let dataset_fmt = DatasetFormat::parse(format_str);
 
-        println!(
-            "Loading {} dataset from: {} ({})",
-            stage_name, dataset_path, format_str
-        );
-        let data_tensors = load_dataset(dataset_path, dataset_fmt, d_model, &device)?;
-        println!("Loaded {} dataset batches.", data_tensors.len());
-
         let epoch_start_val = if stg == start_stage { start_epoch } else { 0 };
 
         for epoch in epoch_start_val..stage_epochs {
+            println!(
+                "Streaming {} dataset iterator from: {} ({}) [Epoch {}/{}]",
+                stage_name,
+                dataset_path,
+                format_str,
+                epoch + 1,
+                stage_epochs
+            );
+
+            let stream = DatasetStream::new(dataset_path, dataset_fmt.clone(), d_model, &device)?;
             let mut epoch_loss_sum = 0.0f32;
             let mut step_count = 0;
 
-            for (batch_idx, tensor) in data_tensors.iter().enumerate() {
+            for (batch_idx, res) in stream.enumerate() {
+                let tensor = res?;
                 let step_loss = match stg {
                     0 => {
                         let mut trainer = Stage0WaveTrainer::new(stage_lr);
-                        trainer.train_step_with_epoch(&mut model, tensor, epoch)?
+                        trainer.train_step_with_epoch(&mut model, &tensor, epoch)?
                     }
                     _ => {
                         let trainer = Stage1HardeningTrainer::new(stage_lr, 0.001, 1.5);
                         trainer.apply_plastic_hardening(&mut model);
                         let mut trainer0 = Stage0WaveTrainer::new(stage_lr);
-                        trainer0.train_step_with_epoch(&mut model, tensor, epoch)?
+                        trainer0.train_step_with_epoch(&mut model, &tensor, epoch)?
                     }
                 };
 
                 epoch_loss_sum += step_loss;
                 step_count += 1;
 
-                if (batch_idx + 1) % 2 == 0 || batch_idx + 1 == data_tensors.len() {
+                if (batch_idx + 1) % 2 == 0 {
                     let rolling_avg = epoch_loss_sum / step_count as f32;
                     println!(
-                        "[Stage {} | Epoch {:2}/{:2} | Batch {:3}/{:3}] Step Loss: {:.6} | Rolling Loss: {:.6}",
-                        stg, epoch + 1, stage_epochs, batch_idx + 1, data_tensors.len(), step_loss, rolling_avg
+                        "[Stage {} | Epoch {:2}/{:2} | Batch {:3}] Step Loss: {:.6} | Rolling Loss: {:.6}",
+                        stg,
+                        epoch + 1,
+                        stage_epochs,
+                        batch_idx + 1,
+                        step_loss,
+                        rolling_avg
                     );
                 }
             }

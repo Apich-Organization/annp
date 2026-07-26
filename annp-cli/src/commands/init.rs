@@ -8,6 +8,8 @@ pub fn execute_init(output: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         "Successfully initialized ANNP configuration TOML file at: {:?}",
         output
     );
-    println!("Edit this configuration to customize Micro-Block dimensions, 4-stage datasets, and eviction parameters.");
+    println!(
+        "Edit this configuration to customize Micro-Block dimensions, 4-stage datasets, and eviction parameters."
+    );
     Ok(())
 }
