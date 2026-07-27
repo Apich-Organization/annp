@@ -5,12 +5,12 @@ edition.workspace = true
 authors.workspace = true
 
 [features]
-default = []
+default = ["cuda"]
 cuda = ["annp-model/cuda", "annp-cuda/cuda", "annp-trainer/cuda"]
 
 [dependencies]
 annp-core = { path = "../annp-core" }
-annp-cuda = { path = "../annp-cuda" }
+annp-cuda = { path = "../annp-cuda", default-features = true, features = ["cuda"] }
 annp-model = { path = "../annp-model" }
 annp-trainer = { path = "../annp-trainer" }
 candle-core.workspace = true

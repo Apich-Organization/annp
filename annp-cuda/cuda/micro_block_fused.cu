@@ -282,9 +282,6 @@ struct MicroBlockDeviceBufferPool {
     }
 
     void ensure_capacity(size_t batch_size, size_t d_head, size_t ffn_dim, size_t kv_len, cudaStream_t stream) {
-        if (last_stream != stream && last_stream != nullptr) {
-            cudaStreamSynchronize(last_stream);
-        }
         last_stream = stream;
 
         size_t pin_elems = batch_size * d_head;

@@ -241,9 +241,6 @@ struct RouterDeviceBufferPool {
     }
 
     void ensure_capacity(size_t batch_size, size_t d_head, size_t num_neighbors, cudaStream_t stream) {
-        if (last_stream != stream && last_stream != nullptr) {
-            cudaStreamSynchronize(last_stream);
-        }
         last_stream = stream;
 
         size_t p_needed = batch_size * d_head;

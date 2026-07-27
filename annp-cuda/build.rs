@@ -94,7 +94,12 @@ fn main() {
     println!("cargo:rerun-if-changed=cuda/particle_router.cu");
     println!("cargo:rerun-if-changed=cuda/particle_aggregator.cu");
 
-    let cuda_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
+    let has_nvcc = Command::new("nvcc")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let cuda_enabled = env::var("CARGO_FEATURE_CUDA").is_ok() || has_nvcc;
 
     if cuda_enabled {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());

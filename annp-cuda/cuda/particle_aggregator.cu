@@ -80,9 +80,6 @@ struct AggregatorDeviceBufferPool {
     }
 
     void ensure_capacity(size_t src_floats, size_t dst_floats, size_t num_particles, cudaStream_t stream) {
-        if (last_stream != stream && last_stream != nullptr) {
-            cudaStreamSynchronize(last_stream);
-        }
         last_stream = stream;
 
         if (src_floats > src_cap) {
