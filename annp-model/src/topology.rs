@@ -36,6 +36,9 @@ impl RoutingTable {
         }
 
         let mut keep_indices = Vec::new();
+        let mut max_norm = -1.0f32;
+        let mut best_k = 0;
+
         for k in 0..num_neighbors {
             let mut norm_sq = 0.0f32;
             for d in 0..self.d_head {
@@ -43,12 +46,20 @@ impl RoutingTable {
                 norm_sq += w * w;
             }
             let norm = (norm_sq / (self.d_head as f32)).sqrt();
+            if norm > max_norm {
+                max_norm = norm;
+                best_k = k;
+            }
             if norm >= pruning_threshold {
                 keep_indices.push(k);
             }
         }
 
-        if keep_indices.is_empty() || keep_indices.len() == num_neighbors {
+        if keep_indices.is_empty() {
+            keep_indices.push(best_k);
+        }
+
+        if keep_indices.len() == num_neighbors {
             return;
         }
 

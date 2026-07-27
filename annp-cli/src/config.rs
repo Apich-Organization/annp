@@ -14,6 +14,7 @@ pub struct AnnpTomlConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelSection {
+    pub num_shards: Option<usize>,
     pub mesh_rows: usize,
     pub mesh_cols: usize,
     pub d_head: usize,
@@ -51,6 +52,7 @@ impl Default for AnnpTomlConfig {
     fn default() -> Self {
         Self {
             model: ModelSection {
+                num_shards: Some(4),
                 mesh_rows: 10,
                 mesh_cols: 10,
                 d_head: 64,
@@ -111,6 +113,7 @@ impl AnnpTomlConfig {
         };
 
         MicroBlockConfig {
+            num_shards: self.model.num_shards.unwrap_or(4),
             mesh_rows: self.model.mesh_rows,
             mesh_cols: self.model.mesh_cols,
             d_head: self.model.d_head,

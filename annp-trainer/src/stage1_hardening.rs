@@ -85,6 +85,8 @@ impl Stage1HardeningTrainer {
 
         for i in 0..model.nodes.len() {
             if model.nodes[i].activation_count >= neurogenesis_threshold {
+                model.nodes[i].activation_count = 0; // Reset node activation counter after split
+
                 let node_a = &model.nodes[i];
                 let neighbor_id = if !model.topology.routing_tables[i].neighbors.is_empty() {
                     model.topology.routing_tables[i].neighbors[0]
@@ -134,5 +136,91 @@ impl Stage1HardeningTrainer {
             links_pruned,
             spawn_details,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annp_core::{MicroBlockConfig, NormStrategy};
+    use candle_core::Device;
+
+    fn create_test_config() -> MicroBlockConfig {
+        MicroBlockConfig {
+            num_shards: 4,
+            mesh_rows: 2,
+            mesh_cols: 2,
+            d_head: 64,
+            ffn_expansion: 8,
+            initial_energy: 1.0,
+            max_hop: 20,
+            min_hop: 2,
+            epsilon_p: 1e-4,
+            epsilon_h: 0.05,
+            temperature: 1.0,
+            norm_strategy: NormStrategy::MicroRMSNorm,
+            alpha_init: 0.01,
+            sphere_radius: 1.0,
+            lambda_temporal: 0.001,
+            lambda_frequency: 0.01,
+            eviction_threshold: 1e-4,
+            pruning_threshold: 1e-7,
+            neurogenesis_threshold: 50,
+            queue_backpressure_alpha: 0.05,
+            min_routing_entropy_noise: 0.05,
+            max_alpha_residual: 0.1,
+        }
+    }
+
+    #[test]
+    fn test_neurogenesis_growth_and_activation_reset() {
+        let config = create_test_config();
+        let device = Device::Cpu;
+        let mut model = ANNPModel::new_with_cuda(4, 4, config, device, false);
+
+        assert_eq!(model.nodes.len(), 4);
+        assert_eq!(model.num_nodes, 4);
+
+        // Manually simulate activations on Node 0 beyond neurogenesis_threshold
+        model.nodes[0].activation_count = 60;
+        model.nodes[1].activation_count = 10;
+
+        let trainer = Stage1HardeningTrainer::new(0.01, 0.001, 1.5);
+        let result = trainer.apply_plastic_hardening(&mut model);
+
+        // Verify neurogenesis triggered for Node 0
+        assert_eq!(result.spawn_details.len(), 1);
+        let (parent_a, _parent_b, new_id) = result.spawn_details[0];
+        assert_eq!(parent_a, 0);
+        assert_eq!(new_id, 4);
+
+        // Verify node count expanded
+        assert_eq!(model.nodes.len(), 5);
+        assert_eq!(model.num_nodes, 5);
+        assert_eq!(model.topology.routing_tables.len(), 5);
+
+        // Verify Node 0 activation count reset to 0
+        assert_eq!(model.nodes[0].activation_count, 0);
+        // Verify Node 1 activation count preserved (10 < 50)
+        assert_eq!(model.nodes[1].activation_count, 10);
+
+        // Verify new node 4 is linked in Node 0's routing neighbors
+        assert!(model.topology.routing_tables[0].neighbors.contains(&4));
+    }
+
+    #[test]
+    fn test_synaptic_pruning() {
+        let mut config = create_test_config();
+        // Set high pruning threshold to force pruning weak links
+        config.pruning_threshold = 100.0;
+        let device = Device::Cpu;
+        let mut model = ANNPModel::new_with_cuda(4, 4, config, device, false);
+
+        let trainer = Stage1HardeningTrainer::new(0.01, 0.001, 1.5);
+        let result = trainer.apply_plastic_hardening(&mut model);
+
+        // Verify dead links were pruned
+        assert!(result.links_pruned > 0);
+        assert!(result.links_before > result.links_pruned);
     }
 }

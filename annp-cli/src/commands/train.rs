@@ -54,7 +54,8 @@ pub fn execute_train(
 
     let (device, use_cuda) = select_device(&device_target);
 
-    let num_shards = 4;
+    let num_shards = core_config.num_shards;
+    let d_model = core_config.d_model();
     let mut model = ANNPModel::new_with_cuda(
         core_config.num_nodes(),
         num_shards,
@@ -84,8 +85,6 @@ pub fn execute_train(
             ),
         );
     }
-
-    let d_model = num_shards * model.config.d_head;
 
     // Streamlined 2-Stage Pipeline Selector
     let stages_to_run: Vec<usize> = match stage_target.to_lowercase().as_str() {

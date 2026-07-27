@@ -37,7 +37,8 @@ pub fn execute_run(
 
     let (device, use_cuda) = select_device(&device_target);
 
-    let num_shards = 4;
+    let num_shards = core_config.num_shards;
+    let d_model = core_config.d_model();
     let mut model = ANNPModel::new_with_cuda(
         core_config.num_nodes(),
         num_shards,
@@ -52,8 +53,6 @@ pub fn execute_run(
         ckpt.apply_to_model(&mut model);
         println!("Successfully loaded weights from {:?}", ckpt_path);
     }
-
-    let d_model = num_shards * model.config.d_head;
 
     // Load Hugging Face / SentencePiece Tokenizer from tokenizer.model
     let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");

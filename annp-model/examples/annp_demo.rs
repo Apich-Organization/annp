@@ -8,6 +8,7 @@ fn main() -> candle_core::Result<()> {
 
     let num_shards = 4;
     let config = MicroBlockConfig {
+        num_shards: 4,
         mesh_rows: 4,
         mesh_cols: 4,
         d_head: 64,

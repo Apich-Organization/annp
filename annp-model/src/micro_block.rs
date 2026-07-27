@@ -224,7 +224,28 @@ impl MicroBlockNode {
                     self.w_up[idx] * weight_decay - lr * self.v_up[idx].clamp(-0.1, 0.1);
             }
         }
+    }
+}
 
-        self.activation_count = 0;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annp_core::ParticleHeader;
+
+    #[test]
+    fn test_micro_block_node_process_batch() {
+        let config = MicroBlockConfig::default();
+        let mut node = MicroBlockNode::new(0, config, 16, false);
+
+        let p1 = Particle::new(ParticleHeader::new(0, 0, 1.0), vec![0.5f32; 64]);
+        let p2 = Particle::new(ParticleHeader::new(1, 0, 1.0), vec![0.8f32; 64]);
+        let mut batch = vec![p1, p2];
+
+        node.process_batch(&mut batch);
+        assert_eq!(node.activation_count, 2);
+        assert_eq!(node.cumulative_sequence_len, 2);
+
+        let shard_err = vec![0.01f32; 64];
+        node.update_weights_with_shard_err(&shard_err, 0.01);
     }
 }

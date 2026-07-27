@@ -53,3 +53,34 @@ impl TokenScattering {
         Ok(particles)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::Device;
+
+    #[test]
+    fn test_token_scattering_split() -> Result<()> {
+        let num_shards = 4;
+        let d_head = 64;
+        let d_model = num_shards * d_head;
+        let seq_len = 5;
+
+        let scattering = TokenScattering::new(num_shards, d_head, 1.0);
+        let config = MicroBlockConfig::default();
+
+        let tensor_data = vec![1.0f32; seq_len * d_model];
+        let tensor = Tensor::from_vec(tensor_data, (seq_len, d_model), &Device::Cpu)?;
+
+        let particles = scattering.scatter_embeddings(&tensor, &config)?;
+
+        assert_eq!(particles.len(), seq_len * num_shards);
+        for p in &particles {
+            assert_eq!(p.d_head(), d_head);
+            assert_eq!(p.header.energy, config.initial_energy);
+            assert!(!p.header.halted);
+        }
+
+        Ok(())
+    }
+}

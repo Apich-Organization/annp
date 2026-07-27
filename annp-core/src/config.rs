@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 /// Configuration for ANNP Micro-Block Nodes and Topology.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MicroBlockConfig {
+    /// Number of parallel particle shards scattered from input sequence (default: 4)
+    pub num_shards: usize,
     /// Mesh topology dimensions: rows * cols (e.g. 100 * 100 = 10,000 nodes)
     pub mesh_rows: usize,
     pub mesh_cols: usize,
@@ -44,6 +46,7 @@ pub struct MicroBlockConfig {
 impl Default for MicroBlockConfig {
     fn default() -> Self {
         Self {
+            num_shards: 4,
             mesh_rows: 10,
             mesh_cols: 10,
             d_head: 64,
@@ -72,6 +75,10 @@ impl Default for MicroBlockConfig {
 impl MicroBlockConfig {
     pub fn num_nodes(&self) -> usize {
         self.mesh_rows * self.mesh_cols
+    }
+
+    pub fn d_model(&self) -> usize {
+        self.num_shards * self.d_head
     }
 }
 

@@ -54,3 +54,38 @@ impl Particle {
         self.payload.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_particle_header_hop_and_energy_decay() {
+        let mut header = ParticleHeader::new(101, 1, 1.0);
+        assert_eq!(header.origin_token_id, 101);
+        assert_eq!(header.shard_id, 1);
+        assert_eq!(header.energy, 1.0);
+        assert_eq!(header.hop_count, 0);
+        assert!(!header.halted);
+
+        let max_hop = 10;
+        for i in 1..=10 {
+            header.step_hop(max_hop);
+            assert_eq!(header.hop_count, i);
+            if i < 10 {
+                assert!(!header.halted);
+            }
+        }
+
+        assert_eq!(header.energy, 0.0);
+        assert!(header.halted);
+    }
+
+    #[test]
+    fn test_particle_payload() {
+        let header = ParticleHeader::new(0, 0, 1.0);
+        let payload = vec![0.5f32; 64];
+        let particle = Particle::new(header, payload);
+        assert_eq!(particle.d_head(), 64);
+    }
+}

@@ -250,3 +250,51 @@ impl ANNPModel {
             .reconstruct_sequence(seq_len, &halted_particles, &self.device)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annp_core::NormStrategy;
+
+    fn create_test_config() -> MicroBlockConfig {
+        MicroBlockConfig {
+            num_shards: 4,
+            mesh_rows: 2,
+            mesh_cols: 2,
+            d_head: 64,
+            ffn_expansion: 8,
+            initial_energy: 1.0,
+            max_hop: 10,
+            min_hop: 2,
+            epsilon_p: 1e-4,
+            epsilon_h: 0.05,
+            temperature: 1.0,
+            norm_strategy: NormStrategy::MicroRMSNorm,
+            alpha_init: 0.01,
+            sphere_radius: 1.0,
+            lambda_temporal: 0.001,
+            lambda_frequency: 0.01,
+            eviction_threshold: 1e-4,
+            pruning_threshold: 1e-7,
+            neurogenesis_threshold: 50,
+            queue_backpressure_alpha: 0.05,
+            min_routing_entropy_noise: 0.05,
+            max_alpha_residual: 0.1,
+        }
+    }
+
+    #[test]
+    fn test_annp_model_forward_pass() -> Result<()> {
+        let config = create_test_config();
+        let device = Device::Cpu;
+        let mut model = ANNPModel::new_with_cuda(4, 4, config, device.clone(), false);
+
+        let d_model = 4 * 64;
+        let input_tensor = Tensor::from_vec(vec![0.1f32; 2 * d_model], (2, d_model), &device)?;
+
+        let output_tensor = model.forward(&input_tensor)?;
+        assert_eq!(output_tensor.dims2()?, (2, d_model));
+
+        Ok(())
+    }
+}

@@ -113,3 +113,34 @@ impl EgressSerializer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_egress_serializer_reconstruct_and_update() -> Result<()> {
+        let d_head = 64;
+        let num_shards = 4;
+        let d_model = d_head * num_shards;
+        let seq_len = 2;
+
+        let mut serializer = EgressSerializer::new(d_head, num_shards);
+        let device = Device::Cpu;
+
+        let particles = vec![
+            Particle::new(annp_core::ParticleHeader::new(0, 0, 1.0), vec![1.0f32; 64]),
+            Particle::new(annp_core::ParticleHeader::new(0, 1, 1.0), vec![2.0f32; 64]),
+            Particle::new(annp_core::ParticleHeader::new(0, 2, 1.0), vec![3.0f32; 64]),
+            Particle::new(annp_core::ParticleHeader::new(0, 3, 1.0), vec![4.0f32; 64]),
+        ];
+
+        let out_tensor = serializer.reconstruct_sequence(seq_len, &particles, &device)?;
+        assert_eq!(out_tensor.dims2()?, (seq_len, d_model));
+
+        let diff_matrix = vec![0.1f32; seq_len * d_model];
+        serializer.update_weights(&diff_matrix, 0.01);
+
+        Ok(())
+    }
+}

@@ -65,3 +65,56 @@ impl Stage0WaveTrainer {
         Ok(mse_loss)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annp_core::{MicroBlockConfig, NormStrategy};
+    use candle_core::Device;
+
+    fn create_test_config() -> MicroBlockConfig {
+        MicroBlockConfig {
+            num_shards: 4,
+            mesh_rows: 2,
+            mesh_cols: 2,
+            d_head: 64,
+            ffn_expansion: 8,
+            initial_energy: 1.0,
+            max_hop: 20,
+            min_hop: 2,
+            epsilon_p: 1e-4,
+            epsilon_h: 0.05,
+            temperature: 1.0,
+            norm_strategy: NormStrategy::MicroRMSNorm,
+            alpha_init: 0.01,
+            sphere_radius: 1.0,
+            lambda_temporal: 0.001,
+            lambda_frequency: 0.01,
+            eviction_threshold: 1e-4,
+            pruning_threshold: 1e-7,
+            neurogenesis_threshold: 50,
+            queue_backpressure_alpha: 0.05,
+            min_routing_entropy_noise: 0.05,
+            max_alpha_residual: 0.1,
+        }
+    }
+
+    #[test]
+    fn test_stage0_train_step() -> Result<()> {
+        let config = create_test_config();
+        let device = Device::Cpu;
+        let mut model = ANNPModel::new_with_cuda(4, 4, config, device.clone(), false);
+
+        let d_model = 4 * 64;
+        let tensor_data = vec![0.5f32; 2 * d_model];
+        let input_embeddings = Tensor::from_vec(tensor_data, (2, d_model), &device)?;
+
+        let mut trainer = Stage0WaveTrainer::new(0.02);
+        let loss = trainer.train_step_with_epoch(&mut model, &input_embeddings, 0)?;
+
+        assert!(loss >= 0.0);
+        assert!(loss.is_finite());
+
+        Ok(())
+    }
+}
