@@ -138,7 +138,11 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                all_values.push(v);
+                if let Some(arr) = v.as_array() {
+                    all_values.extend(arr.clone());
+                } else {
+                    all_values.push(v);
+                }
             }
         }
     }
