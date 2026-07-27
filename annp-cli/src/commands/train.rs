@@ -68,7 +68,8 @@ pub fn execute_train(
     let mut start_epoch = 0;
 
     // Handle Checkpoint Resume
-    if let Some(ckpt_path) = resume_from {
+    let is_resumed = resume_from.is_some();
+    if let Some(ref ckpt_path) = resume_from {
         logger.log(
             "RESUME",
             &format!("Resuming model state from checkpoint: {:?}", ckpt_path),
@@ -114,7 +115,11 @@ pub fn execute_train(
     let file_ext = if use_binary { "annpb" } else { "json" };
 
     for &stg in &stages_to_run {
-        if stg < start_stage {
+        if is_resumed && stg < start_stage {
+            logger.log(
+                "RESUME",
+                &format!("Skipping already completed Stage {}.", stg),
+            );
             continue;
         }
 
@@ -145,7 +150,21 @@ pub fn execute_train(
         let format_str = stage_cfg.dataset_format.as_deref().unwrap_or("synthetic");
         let dataset_fmt = DatasetFormat::parse(format_str);
 
-        let epoch_start_val = if stg == start_stage { start_epoch } else { 0 };
+        let epoch_start_val = if is_resumed && stg == start_stage {
+            start_epoch
+        } else {
+            0
+        };
+
+        if is_resumed && stg == start_stage && epoch_start_val > 0 {
+            logger.log(
+                "RESUME",
+                &format!(
+                    "Resuming Stage {}: Skipping completed Epochs 1..{}, starting directly at Epoch {}/{}",
+                    stg, epoch_start_val, epoch_start_val + 1, stage_epochs
+                ),
+            );
+        }
 
         for epoch in epoch_start_val..stage_epochs {
             logger.log(
