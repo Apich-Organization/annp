@@ -144,10 +144,25 @@ impl TopologyGrid {
         }
     }
 
-    /// Execute synaptic link pruning across all local routing tables
-    pub fn prune_all_links(&mut self, pruning_threshold: f32) {
+    /// Count total active P2P links across all routing tables
+    pub fn total_links(&self) -> usize {
+        self.routing_tables
+            .iter()
+            .map(|rt| rt.neighbors.len())
+            .sum()
+    }
+
+    /// Execute synaptic link pruning across all local routing tables, returning (total_before, total_pruned)
+    pub fn prune_all_links(&mut self, pruning_threshold: f32) -> (usize, usize) {
+        let mut total_before = 0;
+        let mut total_pruned = 0;
         for rt in self.routing_tables.iter_mut() {
+            let before = rt.neighbors.len();
             rt.prune_dead_links(pruning_threshold);
+            let after = rt.neighbors.len();
+            total_before += before;
+            total_pruned += before.saturating_sub(after);
         }
+        (total_before, total_pruned)
     }
 }

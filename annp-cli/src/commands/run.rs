@@ -20,8 +20,13 @@ pub fn execute_run(
     continual_mode: bool,
     save_output: Option<PathBuf>,
     benchmark: bool,
+    log_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Loading ANNP Configuration from: {:?}", config_path);
+    let logger = crate::logger::AnnpLogger::new(&log_dir, "run", None);
+    logger.log(
+        "INIT",
+        &format!("Loading ANNP Configuration from: {:?}", config_path),
+    );
     let toml_config = AnnpTomlConfig::load_from_file(config_path)?;
     let mut core_config = toml_config.to_core_config();
 

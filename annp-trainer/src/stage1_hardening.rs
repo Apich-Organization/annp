@@ -2,6 +2,13 @@ use annp_core::MicroBlockConfig;
 use annp_model::{ANNPModel, MicroBlockNode, RoutingTable};
 use rand::Rng;
 
+#[derive(Debug, Clone)]
+pub struct HardeningResult {
+    pub links_before: usize,
+    pub links_pruned: usize,
+    pub spawn_details: Vec<(usize, usize, usize)>,
+}
+
 /// Stage 1: Plasticity Hardening, Neurogenesis Growth & Precision Fine-Tuning.
 pub struct Stage1HardeningTrainer {
     pub eta_0: f32,
@@ -58,7 +65,7 @@ impl Stage1HardeningTrainer {
     }
 
     /// Perform plastic hardening updates, growth neurogenesis and conservative synaptic pruning across all nodes in ANNPModel
-    pub fn apply_plastic_hardening(&self, model: &mut ANNPModel) {
+    pub fn apply_plastic_hardening(&self, model: &mut ANNPModel) -> HardeningResult {
         // 1. Plastic Hardening Scaling
         for node in model.nodes.iter_mut() {
             let node_lr = self.compute_node_lr(node.cumulative_sequence_len);
@@ -67,7 +74,7 @@ impl Stage1HardeningTrainer {
         }
 
         // 2. Conservative Synaptic Link Pruning
-        model
+        let (links_before, links_pruned) = model
             .topology
             .prune_all_links(model.config.pruning_threshold);
 
@@ -93,9 +100,13 @@ impl Stage1HardeningTrainer {
             }
         }
 
+        let mut spawn_details = Vec::new();
+
         // Inject generated new nodes into model and update P2P topology routing mesh
         for (parent_a, parent_b, new_node) in new_nodes {
             let new_id = new_node.node_id;
+            spawn_details.push((parent_a, parent_b, new_id));
+
             model.nodes.push(new_node);
             model.node_queues.push(Vec::with_capacity(64));
             model.next_queues.push(Vec::with_capacity(64));
@@ -116,6 +127,12 @@ impl Stage1HardeningTrainer {
                     .neighbors
                     .push(new_id);
             }
+        }
+
+        HardeningResult {
+            links_before,
+            links_pruned,
+            spawn_details,
         }
     }
 }

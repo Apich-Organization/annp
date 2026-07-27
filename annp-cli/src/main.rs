@@ -2,6 +2,7 @@ mod checkpoint;
 mod commands;
 mod config;
 mod dataset;
+pub mod logger;
 pub mod tokenizer;
 
 use clap::{Parser, Subcommand};
@@ -44,6 +45,9 @@ enum Commands {
         /// Directory to save output model checkpoints
         #[arg(short, long, default_value = "checkpoints")]
         output_dir: PathBuf,
+        /// Directory to save execution log files
+        #[arg(long, default_value = "logs")]
+        log_dir: PathBuf,
     },
     /// Run model inference pass and throughput performance benchmarks
     Run {
@@ -71,6 +75,9 @@ enum Commands {
         /// Enable high-throughput particle processing benchmark
         #[arg(short, long)]
         benchmark: bool,
+        /// Directory to save execution log files
+        #[arg(long, default_value = "logs")]
+        log_dir: PathBuf,
     },
     /// Edit model checkpoint configuration headers with automatic backup (.bak)
     EditModel {
@@ -123,7 +130,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             device,
             output_dir,
-        } => execute_train(config, stage, resume_from, format, device, output_dir)?,
+            log_dir,
+        } => execute_train(
+            config,
+            stage,
+            resume_from,
+            format,
+            device,
+            output_dir,
+            log_dir,
+        )?,
         Commands::Run {
             config,
             checkpoint,
@@ -133,6 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continual,
             save_output,
             benchmark,
+            log_dir,
         } => execute_run(
             config,
             checkpoint,
@@ -142,6 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continual,
             save_output,
             benchmark,
+            log_dir,
         )?,
         Commands::EditModel {
             checkpoint,

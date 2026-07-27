@@ -41,8 +41,14 @@ pub fn execute_train(
     checkpoint_format: String,
     device_target: String,
     output_dir: PathBuf,
+    log_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Loading ANNP Configuration from: {:?}", config_path);
+    let logger = crate::logger::AnnpLogger::new(&log_dir, "train", None);
+
+    logger.log(
+        "INIT",
+        &format!("Loading ANNP Configuration from: {:?}", config_path),
+    );
     let toml_config = AnnpTomlConfig::load_from_file(config_path)?;
     let core_config = toml_config.to_core_config();
 
@@ -62,14 +68,20 @@ pub fn execute_train(
 
     // Handle Checkpoint Resume
     if let Some(ckpt_path) = resume_from {
-        println!("Resuming model state from checkpoint: {:?}", ckpt_path);
+        logger.log(
+            "RESUME",
+            &format!("Resuming model state from checkpoint: {:?}", ckpt_path),
+        );
         let ckpt = ModelCheckpoint::load(ckpt_path)?;
         ckpt.apply_to_model(&mut model);
         start_stage = ckpt.stage_completed;
         start_epoch = ckpt.epoch_completed + 1;
-        println!(
-            "Successfully resumed from Stage {}, Epoch {}.",
-            start_stage, start_epoch
+        logger.log(
+            "RESUME",
+            &format!(
+                "Successfully resumed from Stage {}, Epoch {}.",
+                start_stage, start_epoch
+            ),
         );
     }
 
@@ -82,14 +94,20 @@ pub fn execute_train(
         _ => vec![0, 1],
     };
 
-    println!("\n=== Starting ANNP Streamlined 2-Stage Evolutionary Training Pipeline ===");
-    println!(
-        "Total Micro-Block Nodes: {} ({}x{})",
-        model.num_nodes, model.config.mesh_rows, model.config.mesh_cols
+    logger.log(
+        "SYSTEM",
+        "=== Starting ANNP Streamlined 2-Stage Evolutionary Training Pipeline ===",
     );
-    println!(
-        "Particle d_head: {}, Total d_model: {}",
-        model.config.d_head, d_model
+    logger.log(
+        "SYSTEM",
+        &format!(
+            "Total Micro-Block Nodes: {} ({}x{}) | Particle d_head: {} | Total d_model: {}",
+            model.num_nodes,
+            model.config.mesh_rows,
+            model.config.mesh_cols,
+            model.config.d_head,
+            d_model
+        ),
     );
 
     let use_binary =
@@ -116,12 +134,13 @@ pub fn execute_train(
             ),
         };
 
-        println!("\n------------------------------------------------------------");
-        println!(
-            ">>> Launching {}: Epochs = {}, LR = {}",
-            stage_name, stage_epochs, stage_lr
+        logger.log(
+            "STAGE",
+            &format!(
+                ">>> Launching {}: Epochs = {}, LR = {}",
+                stage_name, stage_epochs, stage_lr
+            ),
         );
-        println!("------------------------------------------------------------");
 
         let dataset_path = stage_cfg.dataset_path.as_deref().unwrap_or("synthetic");
         let format_str = stage_cfg.dataset_format.as_deref().unwrap_or("synthetic");
@@ -130,13 +149,16 @@ pub fn execute_train(
         let epoch_start_val = if stg == start_stage { start_epoch } else { 0 };
 
         for epoch in epoch_start_val..stage_epochs {
-            println!(
-                "Streaming {} dataset iterator from: {} ({}) [Epoch {}/{}]",
-                stage_name,
-                dataset_path,
-                format_str,
-                epoch + 1,
-                stage_epochs
+            logger.log(
+                "EPOCH",
+                &format!(
+                    "Streaming {} dataset from: {} ({}) [Epoch {}/{}]",
+                    stage_name,
+                    dataset_path,
+                    format_str,
+                    epoch + 1,
+                    stage_epochs
+                ),
             );
 
             let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
@@ -152,7 +174,19 @@ pub fn execute_train(
                     }
                     _ => {
                         let trainer = Stage1HardeningTrainer::new(stage_lr, 0.001, 1.5);
-                        trainer.apply_plastic_hardening(&mut model);
+                        let h_stats = trainer.apply_plastic_hardening(&mut model);
+                        if (batch_idx + 1) % 10 == 0
+                            && (h_stats.links_pruned > 0 || !h_stats.spawn_details.is_empty())
+                        {
+                            logger.log_hardening(
+                                epoch + 1,
+                                h_stats.links_before,
+                                h_stats.links_pruned,
+                                h_stats.spawn_details.len(),
+                                &h_stats.spawn_details,
+                            );
+                        }
+
                         let mut trainer0 = Stage0WaveTrainer::new(stage_lr);
                         trainer0.train_step_with_epoch(&mut model, &tensor, epoch)?
                     }
@@ -163,25 +197,27 @@ pub fn execute_train(
 
                 if (batch_idx + 1) % 2 == 0 {
                     let rolling_avg = epoch_loss_sum / step_count as f32;
-                    println!(
-                        "[Stage {} | Epoch {:2}/{:2} | Batch {:3}] Step Loss: {:.6} | Rolling Loss: {:.6}",
+                    logger.log_step(
                         stg,
                         epoch + 1,
                         stage_epochs,
                         batch_idx + 1,
                         step_loss,
-                        rolling_avg
+                        rolling_avg,
                     );
                 }
             }
 
             let avg_epoch_loss = epoch_loss_sum / step_count.max(1) as f32;
-            println!(
-                "==> Stage {} Epoch {}/{} Complete. Average Loss: {:.6}",
-                stg,
-                epoch + 1,
-                stage_epochs,
-                avg_epoch_loss
+            logger.log(
+                "EPOCH_END",
+                &format!(
+                    "Stage {} Epoch {}/{} Complete. Average Loss: {:.6}",
+                    stg,
+                    epoch + 1,
+                    stage_epochs,
+                    avg_epoch_loss
+                ),
             );
 
             // Save intermediate checkpoint (.annpb binary or .json)
