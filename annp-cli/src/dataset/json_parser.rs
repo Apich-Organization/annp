@@ -114,7 +114,7 @@ pub fn parse_value_to_tensor(
 pub fn split_and_cache_dataset<P: AsRef<Path>>(
     path: P,
     chunk_size: usize,
-) -> Result<Vec<std::path::PathBuf>> {
+) -> Result<(Vec<std::path::PathBuf>, usize)> {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
@@ -180,5 +180,6 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
         chunk_paths.push(chunk_file_path);
     }
 
-    Ok(chunk_paths)
+    let total_samples = all_values.len();
+    Ok((chunk_paths, total_samples))
 }

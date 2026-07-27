@@ -65,6 +65,7 @@ use std::path::PathBuf;
 pub enum DatasetStream {
     ChunkedJson {
         chunk_paths: Vec<PathBuf>,
+        total_sample_count: usize,
         current_chunk_idx: usize,
         current_tensors: Vec<Tensor>,
         cursor: usize,
@@ -86,9 +87,10 @@ impl DatasetStream {
     ) -> Result<Self> {
         let p = path.as_ref();
         if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
-            if let Ok(chunk_paths) = json_parser::split_and_cache_dataset(p, 200) {
+            if let Ok((chunk_paths, total_count)) = json_parser::split_and_cache_dataset(p, 200) {
                 let mut stream = Self::ChunkedJson {
                     chunk_paths,
+                    total_sample_count: total_count,
                     current_chunk_idx: 0,
                     current_tensors: Vec::new(),
                     cursor: 0,
@@ -104,6 +106,23 @@ impl DatasetStream {
         Ok(Self::Buffered { batches, cursor: 0 })
     }
 
+    pub fn total_samples(&self) -> usize {
+        match self {
+            Self::ChunkedJson {
+                total_sample_count, ..
+            } => *total_sample_count,
+            Self::Buffered { batches, .. } => batches.len(),
+        }
+    }
+
+    pub fn skip_samples(&mut self, count: usize) {
+        for _ in 0..count {
+            if self.next().is_none() {
+                break;
+            }
+        }
+    }
+
     fn load_next_chunk(&mut self) -> Result<bool> {
         if let Self::ChunkedJson {
             chunk_paths,
@@ -112,6 +131,7 @@ impl DatasetStream {
             cursor,
             d_model,
             device,
+            ..
         } = self
         {
             if *current_chunk_idx >= chunk_paths.len() {

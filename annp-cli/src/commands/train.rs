@@ -150,6 +150,18 @@ pub fn execute_train(
         let format_str = stage_cfg.dataset_format.as_deref().unwrap_or("synthetic");
         let dataset_fmt = DatasetFormat::parse(format_str);
 
+        let mut stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
+        let total_samples = stream.total_samples().max(1);
+        let samples_per_epoch = (total_samples / stage_epochs).max(1);
+
+        logger.log(
+            "DATASET",
+            &format!(
+                "Loaded dataset with {} total samples. Partitioned into {} samples per Epoch across {} Epochs.",
+                total_samples, samples_per_epoch, stage_epochs
+            ),
+        );
+
         let epoch_start_val = if is_resumed && stg == start_stage {
             start_epoch
         } else {
@@ -157,11 +169,13 @@ pub fn execute_train(
         };
 
         if is_resumed && stg == start_stage && epoch_start_val > 0 {
+            let samples_to_skip = epoch_start_val * samples_per_epoch;
+            stream.skip_samples(samples_to_skip);
             logger.log(
                 "RESUME",
                 &format!(
-                    "Resuming Stage {}: Skipping completed Epochs 1..{}, starting directly at Epoch {}/{}",
-                    stg, epoch_start_val, epoch_start_val + 1, stage_epochs
+                    "Resuming Stage {}: Skipping {} completed samples (Epochs 1..{}), starting directly at Epoch {}/{}",
+                    stg, samples_to_skip, epoch_start_val, epoch_start_val + 1, stage_epochs
                 ),
             );
         }
@@ -170,21 +184,25 @@ pub fn execute_train(
             logger.log(
                 "EPOCH",
                 &format!(
-                    "Streaming {} dataset from: {} ({}) [Epoch {}/{}]",
+                    "Streaming {} dataset from: {} ({}) [Epoch {}/{}] (Samples {}..{})",
                     stage_name,
                     dataset_path,
                     format_str,
                     epoch + 1,
-                    stage_epochs
+                    stage_epochs,
+                    epoch * samples_per_epoch + 1,
+                    (epoch + 1) * samples_per_epoch
                 ),
             );
 
-            let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
             let mut epoch_loss_sum = 0.0f32;
             let mut step_count = 0;
 
-            for (batch_idx, res) in stream.enumerate() {
-                let tensor = res?;
+            for batch_idx in 0..samples_per_epoch {
+                let tensor = match stream.next() {
+                    Some(Ok(b)) => b,
+                    _ => break,
+                };
                 let step_loss = match stg {
                     0 => {
                         let mut trainer = Stage0WaveTrainer::new(stage_lr);
