@@ -11,7 +11,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["ANNP Team"]
+authors = ["Xinyu Yang <Xinyu.Yang@apich.org>"]
+description = "The rust implementation of the Asynchronous Neuro Network Protocol."
 
 [workspace.dependencies]
 candle-core = "0.11"
