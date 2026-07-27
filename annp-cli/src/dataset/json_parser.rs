@@ -123,38 +123,36 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
     let _ = fs::create_dir_all(&tmp_dir);
 
     let p = path.as_ref();
-    let file = File::open(p).map_err(|e| {
-        candle_core::Error::Msg(format!("Failed to open dataset for splitting: {}", e))
-    })?;
-    let reader = BufReader::new(file);
-
     let mut all_values = Vec::new();
 
-    // 1. Try parsing line by line (JSONL format)
-    for line in reader.lines() {
-        if let Ok(l) = line {
-            let trimmed = l.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                if let Some(arr) = v.as_array() {
-                    all_values.extend(arr.clone());
-                } else {
-                    all_values.push(v);
-                }
+    // 1. Try reading whole JSON file (handles multiline JSON array, pretty JSON, or single object)
+    if let Ok(file) = File::open(p) {
+        if let Ok(v) = serde_json::from_reader::<_, Value>(BufReader::new(file)) {
+            if let Some(arr) = v.as_array() {
+                all_values = arr.clone();
+            } else {
+                all_values.push(v);
             }
         }
     }
 
-    // 2. If line-by-line yielded 0 objects, try parsing full content as JSON Array
+    // 2. Fallback: line-by-line JSONL format
     if all_values.is_empty() {
-        if let Ok(content) = fs::read_to_string(p) {
-            if let Ok(v) = serde_json::from_str::<Value>(&content) {
-                if let Some(arr) = v.as_array() {
-                    all_values = arr.clone();
-                } else {
-                    all_values.push(v);
+        if let Ok(file) = File::open(p) {
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    let trimmed = l.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                        if let Some(arr) = v.as_array() {
+                            all_values.extend(arr.clone());
+                        } else {
+                            all_values.push(v);
+                        }
+                    }
                 }
             }
         }
@@ -166,6 +164,12 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
             p
         )));
     }
+
+    println!(
+        "[DATASET] Converting JSON to JSONL in tmp: Loaded {} total valid samples from {:?}",
+        all_values.len(),
+        p.file_name().unwrap_or_default()
+    );
 
     // 3. Save as chunk files in tmp/annp_chunks/ (e.g. chunk_0.jsonl, chunk_1.jsonl...)
     let mut chunk_paths = Vec::new();
