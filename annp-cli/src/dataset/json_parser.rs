@@ -70,7 +70,7 @@ pub fn load_json_or_jsonl_dataset<P: AsRef<Path>>(
     Ok(tensors)
 }
 
-fn parse_value_to_tensor(
+pub fn parse_value_to_tensor(
     val: &Value,
     tokenizer: &AnnpTokenizer,
     d_model: usize,

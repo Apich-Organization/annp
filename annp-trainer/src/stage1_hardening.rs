@@ -121,14 +121,7 @@ impl Stage1HardeningTrainer {
                 .routing_tables
                 .push(RoutingTable::new(model.config.d_head, neighbors));
 
-            if !model.topology.routing_tables[parent_a]
-                .neighbors
-                .contains(&new_id)
-            {
-                model.topology.routing_tables[parent_a]
-                    .neighbors
-                    .push(new_id);
-            }
+            model.topology.routing_tables[parent_a].add_neighbor(new_id);
         }
 
         HardeningResult {

@@ -28,6 +28,30 @@ impl RoutingTable {
         }
     }
 
+    /// Add a new neighbor link to routing table, dynamically expanding weight matrix shape [d_head, num_neighbors]
+    pub fn add_neighbor(&mut self, neighbor_id: usize) {
+        if self.neighbors.contains(&neighbor_id) {
+            return;
+        }
+        let old_num_neighbors = self.neighbors.len();
+        let new_num_neighbors = old_num_neighbors + 1;
+        let mut rng = rand::rng();
+        let scale = (1.0 / (self.d_head as f32)).sqrt();
+
+        let mut new_weights = vec![0.0f32; self.d_head * new_num_neighbors];
+
+        for d in 0..self.d_head {
+            for k in 0..old_num_neighbors {
+                new_weights[d * new_num_neighbors + k] = self.weights[d * old_num_neighbors + k];
+            }
+            new_weights[d * new_num_neighbors + old_num_neighbors] =
+                rng.random_range(-scale..scale);
+        }
+
+        self.neighbors.push(neighbor_id);
+        self.weights = new_weights;
+    }
+
     /// Prune dead/inactive routing links whose max weight norm falls below threshold
     pub fn prune_dead_links(&mut self, pruning_threshold: f32) {
         let num_neighbors = self.neighbors.len();

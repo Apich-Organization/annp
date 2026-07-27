@@ -35,7 +35,11 @@ pub mod csv_parser;
 pub mod json_parser;
 pub mod sqlite_parser;
 
+use crate::tokenizer::AnnpTokenizer;
 use candle_core::{Device, Result, Tensor};
+use serde_json::Value;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -60,9 +64,17 @@ impl DatasetFormat {
 }
 
 /// Zero-Memory-Overhead Streaming Dataset Loader for Massively Large Datasets
-pub struct DatasetStream {
-    batches: Vec<Tensor>,
-    cursor: usize,
+pub enum DatasetStream {
+    StreamedJson {
+        reader: BufReader<File>,
+        tokenizer: AnnpTokenizer,
+        d_model: usize,
+        device: Device,
+    },
+    Buffered {
+        batches: Vec<Tensor>,
+        cursor: usize,
+    },
 }
 
 impl DatasetStream {
@@ -72,8 +84,22 @@ impl DatasetStream {
         d_model: usize,
         device: &Device,
     ) -> Result<Self> {
+        let p = path.as_ref();
+        if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
+            if let Ok(file) = File::open(p) {
+                let reader = BufReader::new(file);
+                let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
+                return Ok(Self::StreamedJson {
+                    reader,
+                    tokenizer,
+                    d_model,
+                    device: device.clone(),
+                });
+            }
+        }
+
         let batches = load_dataset(path, format, d_model, device)?;
-        Ok(Self { batches, cursor: 0 })
+        Ok(Self::Buffered { batches, cursor: 0 })
     }
 }
 
@@ -81,12 +107,40 @@ impl Iterator for DatasetStream {
     type Item = Result<Tensor>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cursor < self.batches.len() {
-            let tensor = self.batches[self.cursor].clone();
-            self.cursor += 1;
-            Some(Ok(tensor))
-        } else {
-            None
+        match self {
+            Self::StreamedJson {
+                reader,
+                tokenizer,
+                d_model,
+                device,
+            } => {
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        line.clear();
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                        if let Ok(Some(t)) =
+                            json_parser::parse_value_to_tensor(&v, tokenizer, *d_model, device)
+                        {
+                            return Some(Ok(t));
+                        }
+                    }
+                    line.clear();
+                }
+                None
+            }
+            Self::Buffered { batches, cursor } => {
+                if *cursor < batches.len() {
+                    let tensor = batches[*cursor].clone();
+                    *cursor += 1;
+                    Some(Ok(tensor))
+                } else {
+                    None
+                }
+            }
         }
     }
 }
