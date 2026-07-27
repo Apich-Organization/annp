@@ -39,7 +39,6 @@ use crate::tokenizer::AnnpTokenizer;
 use candle_core::{Device, Result, Tensor};
 use serde_json::Value;
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -66,7 +65,7 @@ impl DatasetFormat {
 /// Zero-Memory-Overhead Streaming Dataset Loader for Massively Large Datasets
 pub enum DatasetStream {
     StreamedJson {
-        reader: BufReader<File>,
+        stream: serde_json::StreamDeserializer<'static, serde_json::de::IoRead<File>, Value>,
         tokenizer: AnnpTokenizer,
         d_model: usize,
         device: Device,
@@ -87,10 +86,10 @@ impl DatasetStream {
         let p = path.as_ref();
         if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
             if let Ok(file) = File::open(p) {
-                let reader = BufReader::new(file);
+                let stream = serde_json::Deserializer::from_reader(file).into_iter::<Value>();
                 let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
                 return Ok(Self::StreamedJson {
-                    reader,
+                    stream,
                     tokenizer,
                     d_model,
                     device: device.clone(),
@@ -109,13 +108,12 @@ impl Iterator for DatasetStream {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::StreamedJson {
-                reader,
+                stream,
                 tokenizer,
                 d_model,
                 device,
             } => {
-                let mut de = serde_json::Deserializer::from_reader(reader).into_iter::<Value>();
-                while let Some(res) = de.next() {
+                while let Some(res) = stream.next() {
                     if let Ok(v) = res {
                         if let Ok(Some(t)) =
                             json_parser::parse_value_to_tensor(&v, tokenizer, *d_model, device)
