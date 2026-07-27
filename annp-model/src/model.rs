@@ -146,53 +146,63 @@ impl ANNPModel {
                 std::mem::swap(&mut curr_batches[node_id], &mut self.node_queues[node_id]);
             }
 
-            let active_counter = AtomicUsize::new(0);
-            let counter_ptr = &active_counter as *const AtomicUsize as usize;
+            let use_cuda_mode = self.nodes.first().map_or(false, |n| n.use_cuda);
 
-            // High-throughput dtact coroutine P2P mesh scheduling pass using dtact::spawn(async move ...)
-            for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
-                if !batch.is_empty() {
-                    active_counter.fetch_add(1, Ordering::Relaxed);
-                    let node_addr = node as *mut MicroBlockNode as usize;
-                    let batch_ptr = batch as *mut Vec<Particle> as usize;
-
-                    let _handle = dtact::spawn(async move {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            core::arch::asm!(
-                                "sub rsp, 8",
-                                "mov dword ptr [rsp], 0x1F80",
-                                "ldmxcsr [rsp]",
-                                "add rsp, 8",
-                                options(nostack, preserves_flags)
-                            );
-                        }
-
-                        #[cfg(target_arch = "aarch64")]
-                        unsafe {
-                            core::arch::asm!(
-                                "mrs {x}, fpcr",
-                                "bic {x}, {x}, #(0x1F << 8)",
-                                "msr fpcr, {x}",
-                                x = out(reg) _,
-                                options(nostack, preserves_flags)
-                            );
-                        }
-
-                        let node_ptr = node_addr as *mut MicroBlockNode;
-                        let b_ptr = batch_ptr as *mut Vec<Particle>;
-                        let c_ptr = counter_ptr as *const AtomicUsize;
-                        unsafe {
-                            (*node_ptr).process_batch(&mut *b_ptr);
-                            (*c_ptr).fetch_sub(1, Ordering::Release);
-                        }
-                    });
+            if use_cuda_mode {
+                // GPU Mode: Execute active nodes on CUDA GPU stream without CPU multi-threading contention
+                for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
+                    if !batch.is_empty() {
+                        node.process_batch(batch);
+                    }
                 }
-            }
+            } else {
+                // CPU Mode: Multi-threaded AVX2 SIMD execution via dtact worker pool
+                let active_counter = AtomicUsize::new(0);
+                let counter_ptr = &active_counter as *const AtomicUsize as usize;
 
-            // Spin lock waiting for all dtact coroutine fibers in this step to finish processing
-            while active_counter.load(Ordering::Acquire) > 0 {
-                std::hint::spin_loop();
+                for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
+                    if !batch.is_empty() {
+                        active_counter.fetch_add(1, Ordering::Relaxed);
+                        let node_addr = node as *mut MicroBlockNode as usize;
+                        let batch_ptr = batch as *mut Vec<Particle> as usize;
+
+                        let _handle = dtact::spawn(async move {
+                            #[cfg(target_arch = "x86_64")]
+                            unsafe {
+                                core::arch::asm!(
+                                    "sub rsp, 8",
+                                    "mov dword ptr [rsp], 0x1F80",
+                                    "ldmxcsr [rsp]",
+                                    "add rsp, 8",
+                                    options(nostack, preserves_flags)
+                                );
+                            }
+
+                            #[cfg(target_arch = "aarch64")]
+                            unsafe {
+                                core::arch::asm!(
+                                    "mrs {x}, fpcr",
+                                    "bic {x}, {x}, #(0x1F << 8)",
+                                    "msr fpcr, {x}",
+                                    x = out(reg) _,
+                                    options(nostack, preserves_flags)
+                                );
+                            }
+
+                            let node_ptr = node_addr as *mut MicroBlockNode;
+                            let b_ptr = batch_ptr as *mut Vec<Particle>;
+                            let c_ptr = counter_ptr as *const AtomicUsize;
+                            unsafe {
+                                (*node_ptr).process_batch(&mut *b_ptr);
+                                (*c_ptr).fetch_sub(1, Ordering::Release);
+                            }
+                        });
+                    }
+                }
+
+                while active_counter.load(Ordering::Acquire) > 0 {
+                    std::thread::yield_now();
+                }
             }
 
             // Push-routing decision for output particles with P2P Backpressure penalty
