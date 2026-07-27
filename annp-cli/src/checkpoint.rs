@@ -284,14 +284,19 @@ impl ModelCheckpoint {
         let max_node_id = self.nodes.iter().map(|n| n.node_id).max().unwrap_or(0);
         let required_nodes = (max_node_id + 1).max(self.nodes.len());
 
+        let use_cuda = model.nodes.first().map(|n| n.use_cuda).unwrap_or(false);
+        let max_kv_len = model.nodes.first().map(|n| n.max_kv_len).unwrap_or(64);
+
         while model.nodes.len() < required_nodes {
             let new_id = model.nodes.len();
-            let new_node = annp_model::MicroBlockNode::new(new_id, model.config.clone(), 64, false);
+            let new_node =
+                annp_model::MicroBlockNode::new(new_id, model.config.clone(), max_kv_len, use_cuda);
             model.nodes.push(new_node);
             model.node_queues.push(Vec::with_capacity(64));
             model.next_queues.push(Vec::with_capacity(64));
         }
         model.num_nodes = model.nodes.len();
+        model.topology.num_nodes = model.nodes.len();
 
         for node_ckpt in &self.nodes {
             if node_ckpt.node_id < model.nodes.len() {
@@ -310,6 +315,7 @@ impl ModelCheckpoint {
         }
         if !self.routing_tables.is_empty() {
             model.topology.routing_tables = self.routing_tables.clone();
+            model.topology.num_nodes = model.nodes.len();
         }
     }
 

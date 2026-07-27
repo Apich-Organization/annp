@@ -326,9 +326,6 @@ extern "C" void launch_particle_router(
         batch_size, d_head, num_neighbors, temperature, epsilon_p, epsilon_h, min_hop, dev_hdr
     );
 
-    bool sync_1 = copy_back_if_host(chosen_neighbor, dev_chosen, batch_size, stream);
-    bool sync_2 = copy_back_if_host(halting_flags, dev_halting, batch_size, stream);
-    if (sync_1 || sync_2 || was_host_copied) {
-        cudaStreamSynchronize(stream);
-    }
+    copy_back_if_host(chosen_neighbor, dev_chosen, batch_size, stream);
+    copy_back_if_host(halting_flags, dev_halting, batch_size, stream);
 }

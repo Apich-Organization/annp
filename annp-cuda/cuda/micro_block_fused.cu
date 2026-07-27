@@ -366,8 +366,5 @@ extern "C" void launch_fused_micro_block(
         batch_size, d_head, ffn_dim, kv_len, norm_strategy, alpha, sphere_radius
     );
 
-    bool sync_needed = copy_back_if_host(p_out, dev_pout, batch_size * d_head, stream);
-    if (sync_needed || was_host_copied) {
-        cudaStreamSynchronize(stream);
-    }
+    copy_back_if_host(p_out, dev_pout, batch_size * d_head, stream);
 }

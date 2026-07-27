@@ -167,8 +167,5 @@ extern "C" void launch_particle_prefetch_aggregate(
         dev_src, dev_dst, dev_idx, num_particles, d_head
     );
 
-    bool sync_needed = copy_back_if_host(dst_buffer, dev_dst, total_dst_floats, stream);
-    if (sync_needed || was_host_copied) {
-        cudaStreamSynchronize(stream);
-    }
+    copy_back_if_host(dst_buffer, dev_dst, total_dst_floats, stream);
 }
