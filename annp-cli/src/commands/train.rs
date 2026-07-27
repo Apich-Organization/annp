@@ -6,31 +6,32 @@ use annp_trainer::{Stage0WaveTrainer, Stage1HardeningTrainer};
 use candle_core::Device;
 use std::path::PathBuf;
 
-pub fn select_device(device_str: &str) -> Device {
-    let requested_cpu = device_str.to_lowercase() == "cpu";
-    let force_cuda = matches!(device_str.to_lowercase().as_str(), "cuda" | "gpu");
-    let cuda_compiled = annp_cuda::is_cuda_available();
-    let allow_cuda = !requested_cpu
-        && (force_cuda || device_str.to_lowercase() == "auto" || device_str.is_empty());
+pub fn select_device(device_str: &str) -> (Device, bool) {
+    let dev_str = device_str.to_lowercase();
+    let want_cpu = dev_str == "cpu";
+    let want_cuda = matches!(dev_str.as_str(), "cuda" | "gpu" | "auto" | "");
 
-    if allow_cuda && cuda_compiled {
-        if let Ok(cuda_dev) = Device::new_cuda(0) {
-            println!("ANNP Native CUDA Kernel Acceleration: Active (NVIDIA GPU 0)");
-            println!("Selected Compute Device: Cuda(0) [NVIDIA High-Performance GPU Engine]");
-            return cuda_dev;
-        } else if force_cuda {
+    let cuda_available = annp_cuda::is_cuda_available();
+    let use_cuda = !want_cpu && want_cuda && cuda_available;
+
+    let device = if use_cuda {
+        Device::new_cuda(0).unwrap_or(Device::Cpu)
+    } else {
+        Device::Cpu
+    };
+
+    if use_cuda {
+        println!("Selected Compute Device: Cuda(0) [ANNP Native CUDA GPU Acceleration Engine]");
+    } else {
+        if !want_cpu && want_cuda && !cuda_available {
             println!(
-                "Warning: CUDA device requested but CUDA GPU initialization failed. Falling back to CPU."
+                "Notice: CUDA requested but CUDA acceleration is unavailable on this system. Falling back to CPU."
             );
         }
-    } else if force_cuda && !cuda_compiled {
-        println!(
-            "Warning: CUDA device requested but ANNP binary was built without CUDA support. Falling back to CPU."
-        );
+        println!("Selected Compute Device: Cpu [AVX2 SIMD Engine]");
     }
 
-    println!("Selected Compute Device: Cpu [AVX2 SIMD Engine]");
-    Device::Cpu
+    (device, use_cuda)
 }
 
 pub fn execute_train(
@@ -45,14 +46,15 @@ pub fn execute_train(
     let toml_config = AnnpTomlConfig::load_from_file(config_path)?;
     let core_config = toml_config.to_core_config();
 
-    let device = select_device(&device_target);
+    let (device, use_cuda) = select_device(&device_target);
 
     let num_shards = 4;
-    let mut model = ANNPModel::new(
+    let mut model = ANNPModel::new_with_cuda(
         core_config.num_nodes(),
         num_shards,
         core_config,
         device.clone(),
+        use_cuda,
     );
 
     let mut start_stage = 0;

@@ -59,6 +59,17 @@ impl ANNPModel {
         config: MicroBlockConfig,
         device: Device,
     ) -> Self {
+        let use_cuda = matches!(device, Device::Cuda(_));
+        Self::new_with_cuda(num_nodes, num_shards, config, device, use_cuda)
+    }
+
+    pub fn new_with_cuda(
+        num_nodes: usize,
+        num_shards: usize,
+        config: MicroBlockConfig,
+        device: Device,
+        use_cuda: bool,
+    ) -> Self {
         init_dtact_runtime();
 
         let d_head = config.d_head;
@@ -66,7 +77,6 @@ impl ANNPModel {
         let topology = TopologyGrid::new(num_nodes, d_head, 4);
         let serializer = EgressSerializer::new(d_head, num_shards);
 
-        let use_cuda = matches!(device, Device::Cuda(_));
         let nodes = (0..num_nodes)
             .map(|i| MicroBlockNode::new(i, config.clone(), 64, use_cuda))
             .collect();

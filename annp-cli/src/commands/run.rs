@@ -30,14 +30,15 @@ pub fn execute_run(
         core_config.temperature = tau;
     }
 
-    let device = select_device(&device_target);
+    let (device, use_cuda) = select_device(&device_target);
 
     let num_shards = 4;
-    let mut model = ANNPModel::new(
+    let mut model = ANNPModel::new_with_cuda(
         core_config.num_nodes(),
         num_shards,
         core_config,
         device.clone(),
+        use_cuda,
     );
 
     if let Some(ckpt_path) = checkpoint_path {

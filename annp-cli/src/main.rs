@@ -5,7 +5,7 @@ mod dataset;
 pub mod tokenizer;
 
 use clap::{Parser, Subcommand};
-use commands::{execute_export, execute_init, execute_run, execute_train};
+use commands::{execute_edit_model, execute_export, execute_init, execute_run, execute_train};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -72,6 +72,33 @@ enum Commands {
         #[arg(short, long)]
         benchmark: bool,
     },
+    /// Edit model checkpoint configuration headers with automatic backup (.bak)
+    EditModel {
+        /// Path to model checkpoint file (.annpb or .json)
+        #[arg(short = 'k', long)]
+        checkpoint: PathBuf,
+        /// Optional path to new TOML configuration file to apply
+        #[arg(short = 'c', long)]
+        config: Option<PathBuf>,
+        /// Override max_hop ceiling
+        #[arg(long)]
+        max_hop: Option<u16>,
+        /// Override min_hop floor
+        #[arg(long)]
+        min_hop: Option<u16>,
+        /// Override pruning_threshold
+        #[arg(long)]
+        pruning_threshold: Option<f32>,
+        /// Override neurogenesis_threshold
+        #[arg(long)]
+        neurogenesis_threshold: Option<u64>,
+        /// Override routing temperature
+        #[arg(long)]
+        temperature: Option<f32>,
+        /// Override alpha_init
+        #[arg(long)]
+        alpha_init: Option<f32>,
+    },
     /// Export P2P mesh topology and Q-Routing tables from checkpoint
     Export {
         /// Checkpoint file path
@@ -115,6 +142,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continual,
             save_output,
             benchmark,
+        )?,
+        Commands::EditModel {
+            checkpoint,
+            config,
+            max_hop,
+            min_hop,
+            pruning_threshold,
+            neurogenesis_threshold,
+            temperature,
+            alpha_init,
+        } => execute_edit_model(
+            checkpoint,
+            config,
+            max_hop,
+            min_hop,
+            pruning_threshold,
+            neurogenesis_threshold,
+            temperature,
+            alpha_init,
         )?,
         Commands::Export { checkpoint, out } => execute_export(checkpoint, out)?,
     }
