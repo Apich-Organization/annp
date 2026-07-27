@@ -110,3 +110,75 @@ pub fn parse_value_to_tensor(
     }
     Ok(None)
 }
+
+pub fn split_and_cache_dataset<P: AsRef<Path>>(
+    path: P,
+    chunk_size: usize,
+) -> Result<Vec<std::path::PathBuf>> {
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    let tmp_dir = PathBuf::from("tmp").join("annp_chunks");
+    let _ = fs::create_dir_all(&tmp_dir);
+
+    let p = path.as_ref();
+    let file = File::open(p).map_err(|e| {
+        candle_core::Error::Msg(format!("Failed to open dataset for splitting: {}", e))
+    })?;
+    let reader = BufReader::new(file);
+
+    let mut all_values = Vec::new();
+
+    // 1. Try parsing line by line (JSONL format)
+    for line in reader.lines() {
+        if let Ok(l) = line {
+            let trimmed = l.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                all_values.push(v);
+            }
+        }
+    }
+
+    // 2. If line-by-line yielded 0 objects, try parsing full content as JSON Array
+    if all_values.is_empty() {
+        if let Ok(content) = fs::read_to_string(p) {
+            if let Ok(v) = serde_json::from_str::<Value>(&content) {
+                if let Some(arr) = v.as_array() {
+                    all_values = arr.clone();
+                } else {
+                    all_values.push(v);
+                }
+            }
+        }
+    }
+
+    if all_values.is_empty() {
+        return Err(candle_core::Error::Msg(format!(
+            "Dataset {:?} contains 0 valid JSON items",
+            p
+        )));
+    }
+
+    // 3. Save as chunk files in tmp/annp_chunks/ (e.g. chunk_0.jsonl, chunk_1.jsonl...)
+    let mut chunk_paths = Vec::new();
+
+    for (chunk_idx, chunk_values) in all_values.chunks(chunk_size).enumerate() {
+        let chunk_file_path = tmp_dir.join(format!("chunk_{:05}.jsonl", chunk_idx));
+        let mut out_file = File::create(&chunk_file_path)
+            .map_err(|e| candle_core::Error::Msg(format!("Failed to create tmp chunk: {}", e)))?;
+
+        for val in chunk_values {
+            if let Ok(json_line) = serde_json::to_string(val) {
+                let _ = writeln!(out_file, "{}", json_line);
+            }
+        }
+
+        chunk_paths.push(chunk_file_path);
+    }
+
+    Ok(chunk_paths)
+}

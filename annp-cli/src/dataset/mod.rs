@@ -35,10 +35,7 @@ pub mod csv_parser;
 pub mod json_parser;
 pub mod sqlite_parser;
 
-use crate::tokenizer::AnnpTokenizer;
 use candle_core::{Device, Result, Tensor};
-use serde_json::Value;
-use std::fs::File;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -62,11 +59,15 @@ impl DatasetFormat {
     }
 }
 
+use std::path::PathBuf;
+
 /// Zero-Memory-Overhead Streaming Dataset Loader for Massively Large Datasets
 pub enum DatasetStream {
-    StreamedJson {
-        stream: serde_json::StreamDeserializer<'static, serde_json::de::IoRead<File>, Value>,
-        tokenizer: AnnpTokenizer,
+    ChunkedJson {
+        chunk_paths: Vec<PathBuf>,
+        current_chunk_idx: usize,
+        current_tensors: Vec<Tensor>,
+        cursor: usize,
         d_model: usize,
         device: Device,
     },
@@ -85,20 +86,47 @@ impl DatasetStream {
     ) -> Result<Self> {
         let p = path.as_ref();
         if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
-            if let Ok(file) = File::open(p) {
-                let stream = serde_json::Deserializer::from_reader(file).into_iter::<Value>();
-                let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
-                return Ok(Self::StreamedJson {
-                    stream,
-                    tokenizer,
+            if let Ok(chunk_paths) = json_parser::split_and_cache_dataset(p, 200) {
+                let mut stream = Self::ChunkedJson {
+                    chunk_paths,
+                    current_chunk_idx: 0,
+                    current_tensors: Vec::new(),
+                    cursor: 0,
                     d_model,
                     device: device.clone(),
-                });
+                };
+                let _ = stream.load_next_chunk()?;
+                return Ok(stream);
             }
         }
 
         let batches = load_dataset(path, format, d_model, device)?;
         Ok(Self::Buffered { batches, cursor: 0 })
+    }
+
+    fn load_next_chunk(&mut self) -> Result<bool> {
+        if let Self::ChunkedJson {
+            chunk_paths,
+            current_chunk_idx,
+            current_tensors,
+            cursor,
+            d_model,
+            device,
+        } = self
+        {
+            if *current_chunk_idx >= chunk_paths.len() {
+                return Ok(false);
+            }
+            let chunk_path = &chunk_paths[*current_chunk_idx];
+            let tensors =
+                json_parser::load_json_or_jsonl_dataset(chunk_path, true, *d_model, device)?;
+            *current_tensors = tensors;
+            *cursor = 0;
+            *current_chunk_idx += 1;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 
@@ -107,33 +135,43 @@ impl Iterator for DatasetStream {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::StreamedJson {
-                stream,
-                tokenizer,
-                d_model,
-                device,
+            Self::ChunkedJson {
+                cursor,
+                current_tensors,
+                ..
             } => {
-                while let Some(res) = stream.next() {
-                    if let Ok(v) = res {
-                        if let Ok(Some(t)) =
-                            json_parser::parse_value_to_tensor(&v, tokenizer, *d_model, device)
-                        {
-                            return Some(Ok(t));
-                        }
-                    }
+                if *cursor < current_tensors.len() {
+                    let tensor = current_tensors[*cursor].clone();
+                    *cursor += 1;
+                    return Some(Ok(tensor));
                 }
-                None
             }
             Self::Buffered { batches, cursor } => {
                 if *cursor < batches.len() {
                     let tensor = batches[*cursor].clone();
                     *cursor += 1;
-                    Some(Ok(tensor))
-                } else {
-                    None
+                    return Some(Ok(tensor));
+                }
+                return None;
+            }
+        }
+
+        if let Ok(true) = self.load_next_chunk() {
+            if let Self::ChunkedJson {
+                cursor,
+                current_tensors,
+                ..
+            } = self
+            {
+                if *cursor < current_tensors.len() {
+                    let tensor = current_tensors[*cursor].clone();
+                    *cursor += 1;
+                    return Some(Ok(tensor));
                 }
             }
         }
+
+        None
     }
 }
 
