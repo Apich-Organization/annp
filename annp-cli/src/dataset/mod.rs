@@ -39,7 +39,7 @@ use crate::tokenizer::AnnpTokenizer;
 use candle_core::{Device, Result, Tensor};
 use serde_json::Value;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -114,21 +114,15 @@ impl Iterator for DatasetStream {
                 d_model,
                 device,
             } => {
-                let mut line = String::new();
-                while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        line.clear();
-                        continue;
-                    }
-                    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                let mut de = serde_json::Deserializer::from_reader(reader).into_iter::<Value>();
+                while let Some(res) = de.next() {
+                    if let Ok(v) = res {
                         if let Ok(Some(t)) =
                             json_parser::parse_value_to_tensor(&v, tokenizer, *d_model, device)
                         {
                             return Some(Ok(t));
                         }
                     }
-                    line.clear();
                 }
                 None
             }
