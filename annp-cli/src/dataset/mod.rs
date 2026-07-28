@@ -36,6 +36,7 @@ pub mod json_parser;
 pub mod sqlite_parser;
 
 use candle_core::{Device, Result, Tensor};
+use rand::Rng;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy)]
@@ -212,22 +213,78 @@ pub fn load_dataset<P: AsRef<Path>>(
 }
 
 pub fn generate_synthetic_pattern_tensors(d_model: usize, device: &Device) -> Result<Vec<Tensor>> {
-    let seq_len = 32;
-    let num_batches = 8;
+    let seq_len = 64;
+    let num_batches = 128; // 128 rich synthetic batches
     let mut tensors = Vec::with_capacity(num_batches);
+    let mut rng = rand::rng();
+
+    // Multi-domain synthetic generator incorporating 4 structural dynamic modes:
+    // Mode 0: Multi-frequency Harmonic Resonance with Phase Coupling
+    // Mode 1: Long-range Associative Echo Memory Key-Value Pairs
+    // Mode 2: Hierarchical Contextual Modulation (SwiGLU Non-linearity)
+    // Mode 3: Zipfian Heavy-Tail Non-Linear Modulation & Dynamic Phase Drift
+
+    let mut prev_memory_key = vec![0.0f32; d_model];
 
     for b in 0..num_batches {
         let mut flat = Vec::with_capacity(seq_len * d_model);
+        let mut current_mode = b % 4;
+
         for t in 0..seq_len {
-            let t_val = ((t + b * seq_len) as f32 * 0.25) - 31.4159f32;
+            let global_t = (b * seq_len + t) as f32;
+            let t_norm = global_t * 0.05f32;
+
+            // Transition Markov mode every 16 steps
+            if t % 16 == 0 {
+                current_mode = (current_mode + 1 + (rng.random_range(0..2))) % 4;
+            }
+
+            // Scatter key token at step 4 of each batch for long-range associative memory testing
+            if t == 4 {
+                for d in 0..d_model {
+                    prev_memory_key[d] = ((d as f32 * 0.1).sin() + (t_norm * 0.3).cos()) * 1.5;
+                }
+            }
+
             for d in 0..d_model {
-                let d_val = d as f32 * 0.05f32;
-                let low_freq = (t_val * 0.1 + d_val).sin() + (t_val * 0.05 - d_val * 0.5).cos();
-                let high_freq = 0.35f32 * (t_val * 2.5 + d_val * 3.0).sin()
-                    + 0.25f32 * (t_val * 5.0 - d_val * 1.5).cos();
-                let phase_coupling = 0.20f32 * (t_val * 0.2 * d_val).sin();
-                let combined_val = low_freq + high_freq + phase_coupling;
-                flat.push(combined_val);
+                let d_norm = d as f32 / d_model as f32;
+                let d_val = d as f32 * 0.08f32;
+
+                let val = match current_mode {
+                    0 => {
+                        // Multi-frequency Harmonic Resonance with Phase Coupling
+                        let low_freq =
+                            (t_norm * 0.2 + d_val).sin() + (t_norm * 0.05 - d_val * 0.5).cos();
+                        let high_freq = 0.4f32 * (t_norm * 3.0 + d_val * 4.0).sin();
+                        let coupling = 0.25f32 * (t_norm * 0.1 * d_val).sin();
+                        low_freq + high_freq + coupling
+                    }
+                    1 => {
+                        // Long-Range Associative Memory Retrieval (Step t=48 echoes Key from t=4)
+                        if t >= 48 && t <= 52 {
+                            let decay = (-((t as i32 - 48) as f32 * 0.5)).exp();
+                            prev_memory_key[d] * decay + 0.1 * (t_norm + d_val).sin()
+                        } else {
+                            0.5 * (t_norm * 0.4 + d_val * 2.0).cos()
+                        }
+                    }
+                    2 => {
+                        // Hierarchical Nested Syntax (SwiGLU Modulation)
+                        let gate = (t_norm * 0.5 + d_val).sin();
+                        let up = (t_norm * 0.8 - d_val * 1.2).cos();
+                        let swish = gate / (1.0 + (-gate).exp());
+                        swish * up * (1.0 + 0.5 * d_norm)
+                    }
+                    _ => {
+                        // Zipfian Non-Linear Burst with Dynamic Phase Drift
+                        let zipf_factor = 1.0 / (1.0 + (d as f32 * 0.05));
+                        let carrier = (t_norm * 1.5 + d_norm * 6.28).sin();
+                        let tanh_mod = (carrier * 2.0).tanh();
+                        tanh_mod * zipf_factor * 1.8
+                    }
+                };
+
+                flat.push(val);
             }
         }
         let t = Tensor::from_vec(flat, (seq_len, d_model), device)?;

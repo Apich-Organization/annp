@@ -37,6 +37,8 @@ pub struct EvictionSection {
     pub eviction_threshold: f32,
     pub pruning_threshold: f32,
     pub neurogenesis_threshold: Option<u64>,
+    pub subnode_max: Option<usize>,
+    pub progressive_hardening_factor: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,8 @@ impl Default for AnnpTomlConfig {
                 eviction_threshold: 1e-4,
                 pruning_threshold: 1e-7,
                 neurogenesis_threshold: Some(50),
+                subnode_max: Some(8),
+                progressive_hardening_factor: Some(0.5),
             },
             stage0_wave: StageConfig {
                 enabled: true,
@@ -132,6 +136,8 @@ impl AnnpTomlConfig {
             eviction_threshold: self.eviction.eviction_threshold,
             pruning_threshold: self.eviction.pruning_threshold,
             neurogenesis_threshold: self.eviction.neurogenesis_threshold.unwrap_or(50),
+            subnode_max: self.eviction.subnode_max.unwrap_or(8),
+            progressive_hardening_factor: self.eviction.progressive_hardening_factor.unwrap_or(0.5),
             queue_backpressure_alpha: 0.05,
             min_routing_entropy_noise: 0.05,
             max_alpha_residual: 0.1,

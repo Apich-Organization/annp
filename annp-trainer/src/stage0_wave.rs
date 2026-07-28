@@ -93,6 +93,8 @@ mod tests {
             eviction_threshold: 1e-4,
             pruning_threshold: 1e-7,
             neurogenesis_threshold: 50,
+            subnode_max: 8,
+            progressive_hardening_factor: 0.5,
             queue_backpressure_alpha: 0.05,
             min_routing_entropy_noise: 0.05,
             max_alpha_residual: 0.1,

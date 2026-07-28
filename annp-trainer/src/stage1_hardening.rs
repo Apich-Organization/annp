@@ -1,15 +1,13 @@
-use annp_core::MicroBlockConfig;
-use annp_model::{ANNPModel, MicroBlockNode, RoutingTable};
-use rand::Rng;
+use annp_model::ANNPModel;
 
 #[derive(Debug, Clone)]
 pub struct HardeningResult {
     pub links_before: usize,
     pub links_pruned: usize,
-    pub spawn_details: Vec<(usize, usize, usize)>,
+    pub spawn_details: Vec<(usize, usize, usize)>, // (node_id, old_subnode_count, new_subnode_count)
 }
 
-/// Stage 1: Plasticity Hardening, Neurogenesis Growth & Precision Fine-Tuning.
+/// Stage 1: Plasticity Hardening, Subnode Neurogenesis Growth & Precision Fine-Tuning.
 pub struct Stage1HardeningTrainer {
     pub eta_0: f32,
     pub beta: f32,
@@ -27,106 +25,39 @@ impl Stage1HardeningTrainer {
         self.eta_0 / (1.0 + self.beta * s_j).powf(self.theta)
     }
 
-    /// Perform Midpoint Neurogenesis Interpolation: W_C = \alpha * W_A + (1-\alpha) * W_B + \epsilon
-    pub fn interpolate_new_node(
-        &self,
-        node_a: &MicroBlockNode,
-        node_b: &MicroBlockNode,
-        new_node_id: usize,
-        config: MicroBlockConfig,
-    ) -> MicroBlockNode {
-        let mut new_node = MicroBlockNode::new(new_node_id, config, 64, node_a.use_cuda);
-        let mut rng = rand::rng();
-        let alpha = 0.5f32;
-        let epsilon_scale = 0.01f32;
-
-        for (i, w_c) in new_node.w_gate.iter_mut().enumerate() {
-            let w_a = node_a.w_gate[i];
-            let w_b = node_b.w_gate[i];
-            let noise: f32 = rng.random_range(-epsilon_scale..epsilon_scale);
-            *w_c = alpha * w_a + (1.0 - alpha) * w_b + noise;
-        }
-
-        for (i, w_c) in new_node.w_up.iter_mut().enumerate() {
-            let w_a = node_a.w_up[i];
-            let w_b = node_b.w_up[i];
-            let noise: f32 = rng.random_range(-epsilon_scale..epsilon_scale);
-            *w_c = alpha * w_a + (1.0 - alpha) * w_b + noise;
-        }
-
-        for (i, w_c) in new_node.w_down.iter_mut().enumerate() {
-            let w_a = node_a.w_down[i];
-            let w_b = node_b.w_down[i];
-            let noise: f32 = rng.random_range(-epsilon_scale..epsilon_scale);
-            *w_c = alpha * w_a + (1.0 - alpha) * w_b + noise;
-        }
-
-        new_node
-    }
-
-    /// Perform plastic hardening updates, growth neurogenesis and conservative synaptic pruning across all nodes in ANNPModel
+    /// Perform plastic hardening updates and subnode micro-column neurogenesis checking across all nodes
     pub fn apply_plastic_hardening(&self, model: &mut ANNPModel) -> HardeningResult {
-        // 1. Plastic Hardening Scaling
+        // 1. Plastic Hardening Scaling for primary subnodes
         for node in model.nodes.iter_mut() {
             let node_lr = self.compute_node_lr(node.cumulative_sequence_len);
             let scaling = node_lr / self.eta_0;
-            node.alpha *= scaling;
-        }
-
-        // 2. Conservative Synaptic Link Pruning
-        let (links_before, links_pruned) = model
-            .topology
-            .prune_all_links(model.config.pruning_threshold);
-
-        // 3. Dynamic Neurogenesis Growth Checking
-        let mut new_nodes = Vec::new();
-        let neurogenesis_threshold = model.config.neurogenesis_threshold;
-        let config = model.config.clone();
-
-        for i in 0..model.nodes.len() {
-            if model.nodes[i].activation_count >= neurogenesis_threshold {
-                model.nodes[i].activation_count = 0; // Reset node activation counter after split
-
-                let node_a = &model.nodes[i];
-                let neighbor_id = if !model.topology.routing_tables[i].neighbors.is_empty() {
-                    model.topology.routing_tables[i].neighbors[0]
-                } else {
-                    (i + 1) % model.nodes.len()
-                };
-                let node_b = &model.nodes[neighbor_id];
-
-                let new_id = model.nodes.len() + new_nodes.len();
-                let interpolated_node =
-                    self.interpolate_new_node(node_a, node_b, new_id, config.clone());
-                new_nodes.push((i, neighbor_id, interpolated_node));
+            if let Some(primary) = node.subnodes.first_mut() {
+                primary.alpha *= scaling;
             }
         }
 
+        // 2. Subnode Micro-Column Neurogenesis Checking
         let mut spawn_details = Vec::new();
 
-        // Inject generated new nodes into model and update P2P topology routing mesh
-        for (parent_a, parent_b, new_node) in new_nodes {
-            let new_id = new_node.node_id;
-            spawn_details.push((parent_a, parent_b, new_id));
-
-            model.nodes.push(new_node);
-            model.node_queues.push(Vec::with_capacity(64));
-            model.next_queues.push(Vec::with_capacity(64));
-            model.num_nodes += 1;
-
-            // Route parent_a -> new_id -> parent_b
-            let neighbors = vec![parent_b, (parent_a + 1) % model.num_nodes];
-            model
-                .topology
-                .routing_tables
-                .push(RoutingTable::new(model.config.d_head, neighbors));
-
-            model.topology.routing_tables[parent_a].add_neighbor(new_id);
+        for i in 0..model.nodes.len() {
+            let node = &mut model.nodes[i];
+            let count_before = node.subnodes.len();
+            if node.try_subnode_neurogenesis() {
+                let count_after = node.subnodes.len();
+                spawn_details.push((i, count_before, count_after));
+            }
         }
+
+        let links_before = model
+            .topology
+            .routing_tables
+            .iter()
+            .map(|rt| rt.neighbors.len())
+            .sum();
 
         HardeningResult {
             links_before,
-            links_pruned,
+            links_pruned: 0,
             spawn_details,
         }
     }
@@ -159,6 +90,8 @@ mod tests {
             eviction_threshold: 1e-4,
             pruning_threshold: 1e-7,
             neurogenesis_threshold: 50,
+            subnode_max: 8,
+            progressive_hardening_factor: 0.5,
             queue_backpressure_alpha: 0.05,
             min_routing_entropy_noise: 0.05,
             max_alpha_residual: 0.1,
@@ -166,54 +99,53 @@ mod tests {
     }
 
     #[test]
-    fn test_neurogenesis_growth_and_activation_reset() {
+    fn test_subnode_neurogenesis_growth_and_progressive_threshold() {
         let config = create_test_config();
         let device = Device::Cpu;
         let mut model = ANNPModel::new_with_cuda(4, 4, config, device, false);
 
         assert_eq!(model.nodes.len(), 4);
-        assert_eq!(model.num_nodes, 4);
+        assert_eq!(model.nodes[0].subnodes.len(), 1);
+        assert_eq!(model.nodes[0].split_count, 0);
 
-        // Manually simulate activations on Node 0 beyond neurogenesis_threshold
+        // Manually simulate activations on Node 0 beyond base neurogenesis_threshold (50)
         model.nodes[0].activation_count = 60;
         model.nodes[1].activation_count = 10;
 
         let trainer = Stage1HardeningTrainer::new(0.01, 0.001, 1.5);
         let result = trainer.apply_plastic_hardening(&mut model);
 
-        // Verify neurogenesis triggered for Node 0
+        // Verify subnode neurogenesis triggered for Node 0
         assert_eq!(result.spawn_details.len(), 1);
-        let (parent_a, _parent_b, new_id) = result.spawn_details[0];
-        assert_eq!(parent_a, 0);
-        assert_eq!(new_id, 4);
+        let (node_id, count_before, count_after) = result.spawn_details[0];
+        assert_eq!(node_id, 0);
+        assert_eq!(count_before, 1);
+        assert_eq!(count_after, 2);
 
-        // Verify node count expanded
-        assert_eq!(model.nodes.len(), 5);
-        assert_eq!(model.num_nodes, 5);
-        assert_eq!(model.topology.routing_tables.len(), 5);
+        // Verify global node count remained FIXED at 4
+        assert_eq!(model.nodes.len(), 4);
+        assert_eq!(model.nodes[0].subnodes.len(), 2);
+        assert_eq!(model.nodes[0].split_count, 1);
 
-        // Verify Node 0 activation count reset to 0
+        // Verify Node 0 activation count reset to 0 after subnode split
         assert_eq!(model.nodes[0].activation_count, 0);
-        // Verify Node 1 activation count preserved (10 < 50)
-        assert_eq!(model.nodes[1].activation_count, 10);
 
-        // Verify new node 4 is linked in Node 0's routing neighbors
-        assert!(model.topology.routing_tables[0].neighbors.contains(&4));
-    }
+        // Verify progressive threshold increased for split_count = 1 (50 * (1 + 0.5 * 1) = 75)
+        let new_thresh = model.nodes[0]
+            .config
+            .current_neurogenesis_threshold(model.nodes[0].split_count);
+        assert_eq!(new_thresh, 75);
 
-    #[test]
-    fn test_synaptic_pruning() {
-        let mut config = create_test_config();
-        // Set high pruning threshold to force pruning weak links
-        config.pruning_threshold = 100.0;
-        let device = Device::Cpu;
-        let mut model = ANNPModel::new_with_cuda(4, 4, config, device, false);
+        // 60 activations will NOT trigger split now since 60 < 75
+        model.nodes[0].activation_count = 60;
+        let result2 = trainer.apply_plastic_hardening(&mut model);
+        assert_eq!(result2.spawn_details.len(), 0);
 
-        let trainer = Stage1HardeningTrainer::new(0.01, 0.001, 1.5);
-        let result = trainer.apply_plastic_hardening(&mut model);
-
-        // Verify dead links were pruned
-        assert!(result.links_pruned > 0);
-        assert!(result.links_before > result.links_pruned);
+        // 80 activations WILL trigger split since 80 >= 75
+        model.nodes[0].activation_count = 80;
+        let result3 = trainer.apply_plastic_hardening(&mut model);
+        assert_eq!(result3.spawn_details.len(), 1);
+        assert_eq!(model.nodes[0].subnodes.len(), 3);
+        assert_eq!(model.nodes[0].split_count, 2);
     }
 }

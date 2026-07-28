@@ -37,6 +37,10 @@ pub struct MicroBlockConfig {
     pub pruning_threshold: f32,
     /// Activation threshold for Midpoint Neurogenesis Node Generation
     pub neurogenesis_threshold: u64,
+    /// Maximum number of internal subnodes per micro-block container (default: 8)
+    pub subnode_max: usize,
+    /// Progressive plasticity hardening multiplier (default: 0.5)
+    pub progressive_hardening_factor: f32,
     /// Tri-Field dynamics pathology protection parameters
     pub queue_backpressure_alpha: f32,
     pub min_routing_entropy_noise: f32,
@@ -65,6 +69,8 @@ impl Default for MicroBlockConfig {
             eviction_threshold: 1e-4,
             pruning_threshold: 1e-7,
             neurogenesis_threshold: 50,
+            subnode_max: 8,
+            progressive_hardening_factor: 0.5,
             queue_backpressure_alpha: 0.05,
             min_routing_entropy_noise: 0.05,
             max_alpha_residual: 0.1,
@@ -79,6 +85,14 @@ impl MicroBlockConfig {
 
     pub fn d_model(&self) -> usize {
         self.num_shards * self.d_head
+    }
+
+    /// Dynamically calculates progressive hardening threshold based on node split count:
+    /// T_neuro(k) = T_base * (1 + gamma * k)
+    pub fn current_neurogenesis_threshold(&self, split_count: u32) -> u64 {
+        let base = self.neurogenesis_threshold as f64;
+        let factor = 1.0 + (self.progressive_hardening_factor as f64) * (split_count as f64);
+        (base * factor).round() as u64
     }
 }
 

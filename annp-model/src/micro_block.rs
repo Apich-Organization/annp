@@ -1,23 +1,15 @@
+use crate::subnode::Subnode;
 use annp_core::{
     MicroBlockConfig, NormStrategy, Particle, compute_attention_entropy, compute_delta_p,
 };
 use annp_cuda::CudaMicroBlockRunner;
-use rand::Rng;
 
-/// Autonomous Micro-Block Node.
+/// Autonomous Micro-Block Node (Container holding 1 to subnode_max Subnodes).
 pub struct MicroBlockNode {
     pub node_id: usize,
     pub config: MicroBlockConfig,
-    // Weights
-    pub w_gate: Vec<f32>, // [d_head, ffn_dim]
-    pub w_up: Vec<f32>,   // [d_head, ffn_dim]
-    pub w_down: Vec<f32>, // [ffn_dim, d_head]
-    // Momentum Velocity Buffers (\beta = 0.9)
-    pub v_gate: Vec<f32>,
-    pub v_up: Vec<f32>,
-    pub v_down: Vec<f32>,
-    // MicroNorm learnable parameter
-    pub alpha: f32,
+    pub subnodes: Vec<Subnode>,
+    pub split_count: u32,
     // Local FIFO KV Cache
     pub k_cache: Vec<f32>, // Flat [kv_len * d_head]
     pub v_cache: Vec<f32>, // Flat [kv_len * d_head]
@@ -43,24 +35,9 @@ impl MicroBlockNode {
         let d_head = config.d_head;
         let ffn_dim = d_head * config.ffn_expansion;
 
-        let mut rng = rand::rng();
-        let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
+        let primary_subnode = Subnode::new_random(0, d_head, ffn_dim, config.alpha_init);
+        let subnodes = vec![primary_subnode];
 
-        let w_gate = (0..d_head * ffn_dim)
-            .map(|_| rng.random_range(-scale..scale))
-            .collect();
-        let w_up = (0..d_head * ffn_dim)
-            .map(|_| rng.random_range(-scale..scale))
-            .collect();
-        let w_down = (0..ffn_dim * d_head)
-            .map(|_| rng.random_range(-scale..scale))
-            .collect();
-
-        let v_gate = vec![0.0f32; d_head * ffn_dim];
-        let v_up = vec![0.0f32; d_head * ffn_dim];
-        let v_down = vec![0.0f32; ffn_dim * d_head];
-
-        let alpha = config.alpha_init;
         let k_cache = Vec::with_capacity(max_kv_len * d_head);
         let v_cache = Vec::with_capacity(max_kv_len * d_head);
         let last_p_in = vec![0.0f32; d_head];
@@ -68,13 +45,8 @@ impl MicroBlockNode {
         Self {
             node_id,
             config,
-            w_gate,
-            w_up,
-            w_down,
-            v_gate,
-            v_up,
-            v_down,
-            alpha,
+            subnodes,
+            split_count: 0,
             k_cache,
             v_cache,
             max_kv_len,
@@ -85,6 +57,16 @@ impl MicroBlockNode {
             p_out_buf: Vec::with_capacity(64 * d_head),
             use_cuda,
         }
+    }
+
+    /// Primary active subnode reference
+    pub fn primary_subnode(&self) -> &Subnode {
+        &self.subnodes[0]
+    }
+
+    /// Primary active subnode mutable reference
+    pub fn primary_subnode_mut(&mut self) -> &mut Subnode {
+        &mut self.subnodes[0]
     }
 
     /// Update KV Cache with new incoming particle (push FIFO safely)
@@ -103,6 +85,28 @@ impl MicroBlockNode {
 
         self.k_cache.extend_from_slice(&particle.payload);
         self.v_cache.extend_from_slice(&particle.payload);
+    }
+
+    /// Attempts subnode neurogenesis if activation count exceeds progressive hardening threshold
+    pub fn try_subnode_neurogenesis(&mut self) -> bool {
+        let current_thresh = self.config.current_neurogenesis_threshold(self.split_count);
+        if self.activation_count >= current_thresh && self.subnodes.len() < self.config.subnode_max
+        {
+            let parent_subnode = self
+                .subnodes
+                .last()
+                .cloned()
+                .unwrap_or_else(|| self.subnodes[0].clone());
+            let new_subnode_id = self.subnodes.len();
+            let new_subnode = Subnode::spawn_from_parent(new_subnode_id, &parent_subnode, 1e-3);
+
+            self.subnodes.push(new_subnode);
+            self.split_count += 1;
+            self.activation_count = 0;
+            true
+        } else {
+            false
+        }
     }
 
     /// Process a batch of particles through Micro-Block CUDA/CPU computation pipeline (0 heap allocations)
@@ -139,21 +143,27 @@ impl MicroBlockNode {
         self.p_out_buf.clear();
         self.p_out_buf.resize(batch_size * d_head, 0.0f32);
 
+        // Compute through primary active subnode
+        let alpha = self.subnodes[0].alpha;
+        let w_gate = &self.subnodes[0].w_gate;
+        let w_up = &self.subnodes[0].w_up;
+        let w_down = &self.subnodes[0].w_down;
+
         // Launch CUDA / Fused CudaMicroBlockRunner kernel (respecting self.use_cuda flag)
         CudaMicroBlockRunner::execute_fused_with_stream_device(
             &self.p_in_buf,
             &self.k_cache,
             &self.v_cache,
-            &self.w_gate,
-            &self.w_up,
-            &self.w_down,
+            w_gate,
+            w_up,
+            w_down,
             &mut self.p_out_buf,
             batch_size,
             d_head,
             ffn_dim,
             kv_len,
             norm_strat_val,
-            self.alpha,
+            alpha,
             self.config.sphere_radius,
             None,
             self.use_cuda,
@@ -181,6 +191,9 @@ impl MicroBlockNode {
 
         self.activation_count += batch_size as u64;
         self.cumulative_sequence_len += batch_size as u64;
+        for sub in &mut self.subnodes {
+            sub.activation_count += batch_size as u64;
+        }
     }
 
     /// Chain-Rule Backpropagation Update Step (v = 0.9 * v + 0.1 * g)
@@ -194,15 +207,17 @@ impl MicroBlockNode {
         let beta = 0.9f32;
         let weight_decay = 0.9999f32;
 
+        let primary = &mut self.subnodes[0];
+
         // Chain-rule gradient update for W_down [ffn_dim, d_head]
         for j in 0..ffn_dim {
             let p_in_val = self.last_p_in[j % d_head];
             for d in 0..d_head {
                 let idx = j * d_head + d;
                 let grad = shard_err[d] * p_in_val;
-                self.v_down[idx] = beta * self.v_down[idx] + (1.0 - beta) * grad;
-                self.w_down[idx] =
-                    self.w_down[idx] * weight_decay - lr * self.v_down[idx].clamp(-0.1, 0.1);
+                primary.v_down[idx] = beta * primary.v_down[idx] + (1.0 - beta) * grad;
+                primary.w_down[idx] =
+                    primary.w_down[idx] * weight_decay - lr * primary.v_down[idx].clamp(-0.1, 0.1);
             }
         }
 
@@ -212,16 +227,16 @@ impl MicroBlockNode {
             let p_in_d = self.last_p_in[d];
             for j in 0..ffn_dim {
                 let idx = d * ffn_dim + j;
-                let grad_gate = err_d * p_in_d * self.w_down[j * d_head + d];
-                let grad_up = err_d * p_in_d * self.w_down[j * d_head + d];
+                let grad_gate = err_d * p_in_d * primary.w_down[j * d_head + d];
+                let grad_up = err_d * p_in_d * primary.w_down[j * d_head + d];
 
-                self.v_gate[idx] = beta * self.v_gate[idx] + (1.0 - beta) * grad_gate;
-                self.v_up[idx] = beta * self.v_up[idx] + (1.0 - beta) * grad_up;
+                primary.v_gate[idx] = beta * primary.v_gate[idx] + (1.0 - beta) * grad_gate;
+                primary.v_up[idx] = beta * primary.v_up[idx] + (1.0 - beta) * grad_up;
 
-                self.w_gate[idx] =
-                    self.w_gate[idx] * weight_decay - lr * self.v_gate[idx].clamp(-0.1, 0.1);
-                self.w_up[idx] =
-                    self.w_up[idx] * weight_decay - lr * self.v_up[idx].clamp(-0.1, 0.1);
+                primary.w_gate[idx] =
+                    primary.w_gate[idx] * weight_decay - lr * primary.v_gate[idx].clamp(-0.1, 0.1);
+                primary.w_up[idx] =
+                    primary.w_up[idx] * weight_decay - lr * primary.v_up[idx].clamp(-0.1, 0.1);
             }
         }
     }
