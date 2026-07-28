@@ -209,15 +209,18 @@ impl MicroBlockNode {
 
         let primary = &mut self.subnodes[0];
 
+        let ffn_scale = (ffn_dim as f32).sqrt();
+        let head_scale = (d_head as f32).sqrt();
+
         // Chain-rule gradient update for W_down [ffn_dim, d_head]
         for j in 0..ffn_dim {
             let p_in_val = self.last_p_in[j % d_head];
             for d in 0..d_head {
                 let idx = j * d_head + d;
-                let grad = shard_err[d] * p_in_val;
+                let grad = (shard_err[d] * p_in_val) / ffn_scale;
                 primary.v_down[idx] = beta * primary.v_down[idx] + (1.0 - beta) * grad;
-                primary.w_down[idx] =
-                    primary.w_down[idx] * weight_decay - lr * primary.v_down[idx].clamp(-0.1, 0.1);
+                primary.w_down[idx] = primary.w_down[idx] * weight_decay
+                    - lr * primary.v_down[idx].clamp(-0.01, 0.01);
             }
         }
 
@@ -227,16 +230,16 @@ impl MicroBlockNode {
             let p_in_d = self.last_p_in[d];
             for j in 0..ffn_dim {
                 let idx = d * ffn_dim + j;
-                let grad_gate = err_d * p_in_d * primary.w_down[j * d_head + d];
-                let grad_up = err_d * p_in_d * primary.w_down[j * d_head + d];
+                let grad_gate = (err_d * p_in_d * primary.w_down[j * d_head + d]) / head_scale;
+                let grad_up = (err_d * p_in_d * primary.w_down[j * d_head + d]) / head_scale;
 
                 primary.v_gate[idx] = beta * primary.v_gate[idx] + (1.0 - beta) * grad_gate;
                 primary.v_up[idx] = beta * primary.v_up[idx] + (1.0 - beta) * grad_up;
 
-                primary.w_gate[idx] =
-                    primary.w_gate[idx] * weight_decay - lr * primary.v_gate[idx].clamp(-0.1, 0.1);
+                primary.w_gate[idx] = primary.w_gate[idx] * weight_decay
+                    - lr * primary.v_gate[idx].clamp(-0.01, 0.01);
                 primary.w_up[idx] =
-                    primary.w_up[idx] * weight_decay - lr * primary.v_up[idx].clamp(-0.1, 0.1);
+                    primary.w_up[idx] * weight_decay - lr * primary.v_up[idx].clamp(-0.01, 0.01);
             }
         }
     }
