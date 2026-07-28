@@ -18,8 +18,7 @@ sphere_radius = 1.0
 lambda_temporal = 0.001
 lambda_frequency = 0.01
 eviction_threshold = 0.0001
-pruning_threshold = 0.00001
-neurogenesis_threshold = 1600         # Base activation count before initial subnode split
+neurogenesis_threshold = 65536         # Base activation count before initial subnode split
 subnode_max = 8                       # Maximum internal subnodes per micro-block container
 progressive_hardening_factor = 0.5    # Progressive threshold growth factor: T_neuro(k) = T_base * (1 + gamma * k)
 

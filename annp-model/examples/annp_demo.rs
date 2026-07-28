@@ -25,7 +25,6 @@ fn main() -> candle_core::Result<()> {
         lambda_temporal: 0.001,
         lambda_frequency: 0.01,
         eviction_threshold: 1e-4,
-        pruning_threshold: 1e-7,
         neurogenesis_threshold: 50,
         subnode_max: 8,
         progressive_hardening_factor: 0.5,

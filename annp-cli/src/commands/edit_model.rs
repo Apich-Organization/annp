@@ -8,7 +8,6 @@ pub fn execute_edit_model(
     config_path: Option<PathBuf>,
     max_hop: Option<u16>,
     min_hop: Option<u16>,
-    pruning_threshold: Option<f32>,
     neurogenesis_threshold: Option<u64>,
     temperature: Option<f32>,
     alpha_init: Option<f32>,
@@ -49,13 +48,6 @@ pub fn execute_edit_model(
     if let Some(val) = min_hop {
         println!("  - Override min_hop: {} -> {}", ckpt.config.min_hop, val);
         ckpt.config.min_hop = val;
-    }
-    if let Some(val) = pruning_threshold {
-        println!(
-            "  - Override pruning_threshold: {} -> {}",
-            ckpt.config.pruning_threshold, val
-        );
-        ckpt.config.pruning_threshold = val;
     }
     if let Some(val) = neurogenesis_threshold {
         println!(

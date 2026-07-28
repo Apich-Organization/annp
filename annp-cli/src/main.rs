@@ -93,9 +93,6 @@ enum Commands {
         /// Override min_hop floor
         #[arg(long)]
         min_hop: Option<u16>,
-        /// Override pruning_threshold
-        #[arg(long)]
-        pruning_threshold: Option<f32>,
         /// Override neurogenesis_threshold
         #[arg(long)]
         neurogenesis_threshold: Option<u64>,
@@ -166,7 +163,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             max_hop,
             min_hop,
-            pruning_threshold,
             neurogenesis_threshold,
             temperature,
             alpha_init,
@@ -175,7 +171,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             max_hop,
             min_hop,
-            pruning_threshold,
             neurogenesis_threshold,
             temperature,
             alpha_init,

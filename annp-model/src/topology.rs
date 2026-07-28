@@ -52,57 +52,6 @@ impl RoutingTable {
         self.weights = new_weights;
     }
 
-    /// Prune dead/inactive routing links whose max weight norm falls below threshold
-    pub fn prune_dead_links(&mut self, pruning_threshold: f32) {
-        let num_neighbors = self.neighbors.len();
-        if num_neighbors <= 1 {
-            return;
-        }
-
-        let mut keep_indices = Vec::new();
-        let mut max_norm = -1.0f32;
-        let mut best_k = 0;
-
-        for k in 0..num_neighbors {
-            let mut norm_sq = 0.0f32;
-            for d in 0..self.d_head {
-                let w = self.weights[d * num_neighbors + k];
-                norm_sq += w * w;
-            }
-            let norm = (norm_sq / (self.d_head as f32)).sqrt();
-            if norm > max_norm {
-                max_norm = norm;
-                best_k = k;
-            }
-            if norm >= pruning_threshold {
-                keep_indices.push(k);
-            }
-        }
-
-        if keep_indices.is_empty() {
-            keep_indices.push(best_k);
-        }
-
-        if keep_indices.len() == num_neighbors {
-            return;
-        }
-
-        let new_num_neighbors = keep_indices.len();
-        let mut new_neighbors = Vec::with_capacity(new_num_neighbors);
-        let mut new_weights = vec![0.0f32; self.d_head * new_num_neighbors];
-
-        for (new_k, &old_k) in keep_indices.iter().enumerate() {
-            new_neighbors.push(self.neighbors[old_k]);
-            for d in 0..self.d_head {
-                new_weights[d * new_num_neighbors + new_k] =
-                    self.weights[d * num_neighbors + old_k];
-            }
-        }
-
-        self.neighbors = new_neighbors;
-        self.weights = new_weights;
-    }
-
     /// Predict next hop neighbor node index using Q-Routing dot product + Softmax (0 heap allocations)
     pub fn select_next_hop(&self, particle: &Particle, temperature: f32) -> usize {
         let num_neighbors = self.neighbors.len();
@@ -185,19 +134,5 @@ impl TopologyGrid {
             .iter()
             .map(|rt| rt.neighbors.len())
             .sum()
-    }
-
-    /// Execute synaptic link pruning across all local routing tables, returning (total_before, total_pruned)
-    pub fn prune_all_links(&mut self, pruning_threshold: f32) -> (usize, usize) {
-        let mut total_before = 0;
-        let mut total_pruned = 0;
-        for rt in self.routing_tables.iter_mut() {
-            let before = rt.neighbors.len();
-            rt.prune_dead_links(pruning_threshold);
-            let after = rt.neighbors.len();
-            total_before += before;
-            total_pruned += before.saturating_sub(after);
-        }
-        (total_before, total_pruned)
     }
 }

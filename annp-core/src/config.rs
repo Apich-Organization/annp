@@ -34,7 +34,6 @@ pub struct MicroBlockConfig {
     pub lambda_temporal: f32,
     pub lambda_frequency: f32,
     pub eviction_threshold: f32,
-    pub pruning_threshold: f32,
     /// Activation threshold for Midpoint Neurogenesis Node Generation
     pub neurogenesis_threshold: u64,
     /// Maximum number of internal subnodes per micro-block container (default: 8)
@@ -67,7 +66,6 @@ impl Default for MicroBlockConfig {
             lambda_temporal: 0.001,
             lambda_frequency: 0.01,
             eviction_threshold: 1e-4,
-            pruning_threshold: 1e-7,
             neurogenesis_threshold: 50,
             subnode_max: 8,
             progressive_hardening_factor: 0.5,
