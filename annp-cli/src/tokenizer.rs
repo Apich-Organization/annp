@@ -191,10 +191,18 @@ impl AnnpTokenizer {
 
         for (pos, &token_id) in ids.iter().enumerate() {
             let base_val = (token_id as f32) / 1000.0f32;
+            let mut tok_vec = Vec::with_capacity(d_model);
             for d in 0..d_model {
                 let phase = (pos as f32 * 0.1f32 + d as f32 * 0.05f32).sin();
                 let freq = (base_val + d as f32 * 0.01f32).cos();
-                flat.push(base_val * phase + freq * 0.5f32);
+                tok_vec.push(base_val * phase + freq * 0.5f32);
+            }
+            // RMS Normalization to keep embedding magnitude at unit scale (~1.0)
+            let rms = (tok_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
+                .sqrt()
+                .max(1e-6);
+            for v in tok_vec {
+                flat.push(v / rms);
             }
         }
 

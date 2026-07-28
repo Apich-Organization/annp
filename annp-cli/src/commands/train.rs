@@ -182,6 +182,7 @@ pub fn execute_train(
             let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
             let mut epoch_loss_sum = 0.0f32;
             let mut step_count = 0;
+            let mut rolling_ema = 0.0f32;
 
             for (batch_idx, res) in stream.enumerate() {
                 let tensor = res?;
@@ -213,15 +214,20 @@ pub fn execute_train(
                 epoch_loss_sum += step_loss;
                 step_count += 1;
 
+                rolling_ema = if step_count == 1 {
+                    step_loss
+                } else {
+                    0.9f32 * rolling_ema + 0.1f32 * step_loss
+                };
+
                 if (batch_idx + 1) % 2 == 0 {
-                    let rolling_avg = epoch_loss_sum / step_count as f32;
                     logger.log_step(
                         stg,
                         epoch + 1,
                         stage_epochs,
                         batch_idx + 1,
                         step_loss,
-                        rolling_avg,
+                        rolling_ema,
                     );
                 }
             }
