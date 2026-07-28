@@ -104,11 +104,11 @@ impl EgressSerializer {
                     let diff_val = diff_matrix[t * d_model + i];
                     grad += x_val * diff_val;
                 }
-                grad /= (seq_len as f32) * (d_model as f32).sqrt();
+                grad /= (seq_len as f32) * (d_model as f32);
 
                 self.v_egress[idx] = beta * self.v_egress[idx] + (1.0 - beta) * grad;
-                self.w_egress[idx] =
-                    self.w_egress[idx] * weight_decay - lr * self.v_egress[idx].clamp(-0.1, 0.1);
+                self.w_egress[idx] = self.w_egress[idx] * weight_decay
+                    - lr * self.v_egress[idx].clamp(-0.001, 0.001);
             }
         }
     }
