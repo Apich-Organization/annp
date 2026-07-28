@@ -104,6 +104,12 @@ pub fn parse_value_to_tensor(
         }
 
         if seq_len > 0 && flat.len() == seq_len * d_model {
+            let rms = (flat.iter().map(|x| x * x).sum::<f32>() / flat.len() as f32)
+                .sqrt()
+                .max(1e-6);
+            for x in flat.iter_mut() {
+                *x /= rms;
+            }
             let t = Tensor::from_vec(flat, (seq_len, d_model), device)?;
             return Ok(Some(t));
         }

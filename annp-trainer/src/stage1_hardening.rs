@@ -27,12 +27,13 @@ impl Stage1HardeningTrainer {
 
     /// Perform plastic hardening updates and subnode micro-column neurogenesis checking across all nodes
     pub fn apply_plastic_hardening(&self, model: &mut ANNPModel) -> HardeningResult {
-        // 1. Plastic Hardening Scaling for primary subnodes
+        // 1. Plastic Hardening Scaling for primary subnodes (Direct assignment from alpha_init to prevent geometric compound decay)
+        let alpha_init = model.config.alpha_init;
         for node in model.nodes.iter_mut() {
             let node_lr = self.compute_node_lr(node.cumulative_sequence_len);
             let scaling = node_lr / self.eta_0;
             if let Some(primary) = node.subnodes.first_mut() {
-                primary.alpha *= scaling;
+                primary.alpha = alpha_init * scaling;
             }
         }
 
