@@ -122,6 +122,7 @@ mod tests {
 
         let mut trainer = Stage0WaveTrainer::new(0.02);
         let loss = trainer.train_step_with_epoch(&mut model, &input_embeddings, 0)?;
+        println!("DEBUG_TEST_LOSS = {}", loss);
 
         assert!(loss >= 0.0);
         assert!(loss.is_finite());

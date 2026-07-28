@@ -190,14 +190,23 @@ impl AnnpTokenizer {
         let mut flat = Vec::with_capacity(seq_len * d_model);
 
         for (pos, &token_id) in ids.iter().enumerate() {
-            let base_val = (token_id as f32) / 1000.0f32;
             let mut tok_vec = Vec::with_capacity(d_model);
+            let mut seed = (token_id as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add(1);
+
             for d in 0..d_model {
-                let phase = (pos as f32 * 0.1f32 + d as f32 * 0.05f32).sin();
-                let freq = (base_val + d as f32 * 0.01f32).cos();
-                tok_vec.push(base_val * phase + freq * 0.5f32);
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
+
+                // Sinusoidal Positional Encoding (scale 0.1)
+                let pos_enc = (pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
+                tok_vec.push(rand_f32 + pos_enc);
             }
-            // RMS Normalization to keep embedding magnitude at unit scale (~1.0)
+
+            // RMS Normalization to anchor unit embedding scale (~1.0)
             let rms = (tok_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
                 .sqrt()
                 .max(1e-6);
