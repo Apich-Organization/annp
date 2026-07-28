@@ -22,18 +22,28 @@ impl Stage0WaveTrainer {
         input_embeddings: &Tensor,
         epoch_idx: usize,
     ) -> Result<f32> {
-        let output = model.forward(input_embeddings)?;
-        let (seq_len, d_model) = input_embeddings.dims2()?;
+        let (full_seq_len, d_model) = input_embeddings.dims2()?;
         let d_head = model.config.d_head;
         let num_shards = d_model / d_head;
+
+        // Autoregressive Next-Token Slicing: Inputs = X[0..S-1], Targets = X[1..S]
+        let (inputs, targets) = if full_seq_len >= 2 {
+            let inp = input_embeddings.narrow(0, 0, full_seq_len - 1)?;
+            let tgt = input_embeddings.narrow(0, 1, full_seq_len - 1)?;
+            (inp, tgt)
+        } else {
+            (input_embeddings.clone(), input_embeddings.clone())
+        };
+
+        let output = model.forward(&inputs)?;
+        let (seq_len, _) = inputs.dims2()?;
 
         // Learning rate decay: lr = base_lr * (0.85)^epoch_idx
         let lr_decay = self.base_lr * 0.85f32.powi(epoch_idx as i32);
 
-        // Supervised MSE Reconstruction Loss
-        let diff = (output.clone() - input_embeddings)?;
-        let mse_loss =
-            (diff.sqr()?.sum_all()?.to_scalar::<f32>()?) / (input_embeddings.elem_count() as f32);
+        // Autoregressive Next-Token Prediction MSE Loss (output vs targets)
+        let diff = (output.clone() - &targets)?;
+        let mse_loss = (diff.sqr()?.sum_all()?.to_scalar::<f32>()?) / (targets.elem_count() as f32);
 
         let diff_vec = diff.flatten_all()?.to_vec1::<f32>()?;
 
