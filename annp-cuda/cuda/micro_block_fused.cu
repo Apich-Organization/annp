@@ -201,6 +201,7 @@ extern "C" __global__ void fused_micro_block_kernel(
     __syncthreads();
 
     // Step 3: SwiGLU Activation
+    float inv_sqrt_dhead = rsqrtf((float)d_head);
     for (int j = tid; j < ffn_dim; j += blockDim.x) {
         float gate = 0.0f;
         float up = 0.0f;
@@ -209,17 +210,20 @@ extern "C" __global__ void fused_micro_block_kernel(
             gate += m_val * __ldg(w_gate + d * ffn_dim + j);
             up   += m_val * __ldg(w_up + d * ffn_dim + j);
         }
+        gate *= inv_sqrt_dhead;
+        up *= inv_sqrt_dhead;
         s_ffn_inter[j] = swiglu(gate, up);
     }
     __syncthreads();
 
     // Step 4: Down Projection
+    float inv_sqrt_ffndim = rsqrtf((float)ffn_dim);
     for (int d = tid; d < d_head; d += blockDim.x) {
         float ffn_acc = 0.0f;
         for (int j = 0; j < ffn_dim; ++j) {
             ffn_acc += s_ffn_inter[j] * __ldg(w_down + j * d_head + d);
         }
-        s_attn[d] = ffn_acc;
+        s_attn[d] = ffn_acc * inv_sqrt_ffndim;
     }
     __syncthreads();
 
