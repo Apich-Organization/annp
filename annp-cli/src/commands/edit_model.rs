@@ -8,9 +8,6 @@ pub fn execute_edit_model(
     config_path: Option<PathBuf>,
     max_hop: Option<u16>,
     min_hop: Option<u16>,
-    neurogenesis_threshold: Option<u64>,
-    temperature: Option<f32>,
-    alpha_init: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !checkpoint_path.exists() {
         return Err(format!("Checkpoint file {:?} does not exist", checkpoint_path).into());
@@ -49,27 +46,7 @@ pub fn execute_edit_model(
         println!("  - Override min_hop: {} -> {}", ckpt.config.min_hop, val);
         ckpt.config.min_hop = val;
     }
-    if let Some(val) = neurogenesis_threshold {
-        println!(
-            "  - Override neurogenesis_threshold: {} -> {}",
-            ckpt.config.neurogenesis_threshold, val
-        );
-        ckpt.config.neurogenesis_threshold = val;
-    }
-    if let Some(val) = temperature {
-        println!(
-            "  - Override temperature: {} -> {}",
-            ckpt.config.temperature, val
-        );
-        ckpt.config.temperature = val;
-    }
-    if let Some(val) = alpha_init {
-        println!(
-            "  - Override alpha_init: {} -> {}",
-            ckpt.config.alpha_init, val
-        );
-        ckpt.config.alpha_init = val;
-    }
+
 
     // 5. Save updated checkpoint
     ckpt.save(&checkpoint_path)?;

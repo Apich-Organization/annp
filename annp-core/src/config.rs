@@ -18,32 +18,10 @@ pub struct MicroBlockConfig {
     pub max_hop: u16,
     /// Minimum hops required before spontaneous halting convergence checks begin
     pub min_hop: u16,
-    /// Threshold for feature delta change norm ||p_out - p_in||_2
-    pub epsilon_p: f32,
-    /// Threshold for local attention distribution entropy H
-    pub epsilon_h: f32,
-    /// Softmax temperature for Q-routing or Gumbel-Softmax
-    pub temperature: f32,
     /// Micro-Norm option selection
     pub norm_strategy: NormStrategy,
-    /// RMSNorm learning alpha scaling factor initial value
-    pub alpha_init: f32,
-    /// Base sphere radius for Sphere Normalization
-    pub sphere_radius: f32,
-    /// Double-factor eviction parameters
-    pub lambda_temporal: f32,
-    pub lambda_frequency: f32,
-    pub eviction_threshold: f32,
-    /// Activation threshold for Midpoint Neurogenesis Node Generation
-    pub neurogenesis_threshold: u64,
     /// Maximum number of internal subnodes per micro-block container (default: 8)
     pub subnode_max: usize,
-    /// Progressive plasticity hardening multiplier (default: 0.5)
-    pub progressive_hardening_factor: f32,
-    /// Tri-Field dynamics pathology protection parameters
-    pub queue_backpressure_alpha: f32,
-    pub min_routing_entropy_noise: f32,
-    pub max_alpha_residual: f32,
 }
 
 impl Default for MicroBlockConfig {
@@ -57,21 +35,8 @@ impl Default for MicroBlockConfig {
             initial_energy: 1.0,
             max_hop: 200,
             min_hop: 10,
-            epsilon_p: 1e-4,
-            epsilon_h: 0.05,
-            temperature: 1.0,
             norm_strategy: NormStrategy::MicroRMSNorm,
-            alpha_init: 0.01,
-            sphere_radius: 1.0,
-            lambda_temporal: 0.001,
-            lambda_frequency: 0.01,
-            eviction_threshold: 1e-4,
-            neurogenesis_threshold: 50,
             subnode_max: 8,
-            progressive_hardening_factor: 0.5,
-            queue_backpressure_alpha: 0.05,
-            min_routing_entropy_noise: 0.05,
-            max_alpha_residual: 0.1,
         }
     }
 }
@@ -84,14 +49,6 @@ impl MicroBlockConfig {
     pub fn d_model(&self) -> usize {
         self.num_shards * self.d_head
     }
-
-    /// Dynamically calculates progressive hardening threshold based on node split count:
-    /// T_neuro(k) = T_base * (1 + gamma * k)
-    pub fn current_neurogenesis_threshold(&self, split_count: u32) -> u64 {
-        let base = self.neurogenesis_threshold as f64;
-        let factor = 1.0 + (self.progressive_hardening_factor as f64) * (split_count as f64);
-        (base * factor).round() as u64
-    }
 }
 
 /// Flexible Micro-Normalization Strategies defined in Section 2.2 of ANNP design.
@@ -102,3 +59,4 @@ pub enum NormStrategy {
     /// Option B: Sphere Normalization (projection onto d_head unit sphere)
     SphereNormalization,
 }
+

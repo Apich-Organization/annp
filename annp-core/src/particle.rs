@@ -43,10 +43,10 @@ impl ParticleHeader {
 pub struct Particle {
     pub header: ParticleHeader,
     pub payload: Vec<f32>,
-    /// Identifies one independent input excitation without imposing causal
-    /// ordering inside that excitation.
+    /// Continuous temporal trace mimicking chemical concentration gradients, 
+    /// replacing discrete synchronous wave_ids. Used for STDP-like binding.
     #[serde(default)]
-    pub wave_id: u64,
+    pub trace_concentration: f32,
     /// Local contrastive improvement written by the node that last processed
     /// this particle. It is the sole routing-learning signal.
     #[serde(default)]
@@ -62,7 +62,7 @@ impl Particle {
         Self {
             header,
             payload,
-            wave_id: 0,
+            trace_concentration: 1.0,
             credit: 0.0,
             credit_valid: false,
         }
@@ -105,5 +105,6 @@ mod tests {
         let payload = vec![0.5f32; 64];
         let particle = Particle::new(header, payload);
         assert_eq!(particle.d_head(), 64);
+        assert_eq!(particle.trace_concentration, 1.0);
     }
 }

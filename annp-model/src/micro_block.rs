@@ -11,7 +11,7 @@ pub struct MicroBlockNode {
     // Local FIFO KV Cache
     pub k_cache: Vec<f32>, // Flat [kv_len * d_head]
     pub v_cache: Vec<f32>, // Flat [kv_len * d_head]
-    pub kv_wave_ids: Vec<u64>,
+    pub kv_traces: Vec<f32>,
     pub kv_token_ids: Vec<u32>,
     pub kv_shard_ids: Vec<u16>,
     pub max_kv_len: usize,
@@ -42,7 +42,8 @@ impl MicroBlockNode {
         let d_head = config.d_head;
         let ffn_dim = d_head * config.ffn_expansion;
 
-        let primary_subnode = Subnode::new_random(0, d_head, ffn_dim, config.alpha_init);
+        let alpha_init = 1.0 / (d_head as f32).sqrt();
+        let primary_subnode = Subnode::new_random(0, d_head, ffn_dim, alpha_init);
         let subnodes = vec![primary_subnode];
 
         let k_cache = Vec::with_capacity(max_kv_len * d_head);
@@ -56,7 +57,7 @@ impl MicroBlockNode {
             split_count: 0,
             k_cache,
             v_cache,
-            kv_wave_ids: Vec::with_capacity(max_kv_len),
+            kv_traces: Vec::with_capacity(max_kv_len),
             kv_token_ids: Vec::with_capacity(max_kv_len),
             kv_shard_ids: Vec::with_capacity(max_kv_len),
             max_kv_len,
@@ -92,7 +93,7 @@ impl MicroBlockNode {
                 // Evict oldest KV entry safely
                 self.k_cache.drain(0..d_head);
                 self.v_cache.drain(0..d_head);
-                self.kv_wave_ids.remove(0);
+                self.kv_traces.remove(0);
                 self.kv_token_ids.remove(0);
                 self.kv_shard_ids.remove(0);
             }
@@ -100,7 +101,7 @@ impl MicroBlockNode {
 
         self.k_cache.extend_from_slice(&particle.payload);
         self.v_cache.extend_from_slice(&particle.payload);
-        self.kv_wave_ids.push(particle.wave_id);
+        self.kv_traces.push(particle.trace_concentration);
         self.kv_token_ids.push(particle.header.origin_token_id);
         self.kv_shard_ids.push(particle.header.shard_id);
     }
@@ -119,7 +120,12 @@ impl MicroBlockNode {
                 .cloned()
                 .unwrap_or_else(|| self.subnodes[0].clone());
             let new_subnode_id = self.subnodes.len();
-            let new_subnode = Subnode::spawn_from_parent(new_subnode_id, &parent_subnode, 1e-3);
+            let new_subnode = Subnode::spawn_from_parent(
+                new_subnode_id, 
+                &parent_subnode, 
+                self.config.d_head, 
+                self.config.d_head * self.config.ffn_expansion
+            );
 
             self.subnodes.push(new_subnode);
             self.split_count += 1;
@@ -196,11 +202,17 @@ impl MicroBlockNode {
             let key_norm = key.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
             let similarity = payload.iter().zip(key).map(|(a, b)| a * b).sum::<f32>()
                 / (payload_norm * key_norm);
-            if self.kv_wave_ids.get(index) == Some(&particle.wave_id)
+            
+            // Continuous trace proximity for causality binding (STDP-like)
+            let trace_diff = (self.kv_traces.get(index).unwrap_or(&0.0) - particle.trace_concentration).abs();
+            let temporal_affinity = (1.0 - trace_diff).max(0.0);
+
+            if temporal_affinity > 0.8
                 && self.kv_token_ids.get(index) == Some(&particle.header.origin_token_id)
                 && self.kv_shard_ids.get(index) == Some(&particle.header.shard_id)
             {
-                best_positive = Some(best_positive.map_or(similarity, |best| best.max(similarity)));
+                let effective_sim = similarity * temporal_affinity;
+                best_positive = Some(best_positive.map_or(effective_sim, |best| best.max(effective_sim)));
             } else {
                 negative_sum += similarity;
                 negative_count += 1;
@@ -225,24 +237,26 @@ impl MicroBlockNode {
         };
 
         // Flatten p_in payloads and cache last_p_in into reusable p_in_buf
+        // SUPERPOSITION: Combine all particles in the batch into a single membrane potential vector
         self.p_in_buf.clear();
-        self.p_in_buf.reserve(batch_size * d_head);
-
-        for (d, val) in self.last_p_in.iter_mut().enumerate() {
-            *val = 0.0;
-            for p in particles.iter() {
-                *val += p.payload[d];
-            }
-            *val /= batch_size as f32;
-        }
-        self.select_active_subnode();
+        self.p_in_buf.resize(d_head, 0.0);
 
         for p in particles.iter() {
-            self.p_in_buf.extend_from_slice(&p.payload);
+            for (d, val) in p.payload.iter().enumerate() {
+                self.p_in_buf[d] += val;
+            }
         }
 
+        // Normalize superposition by batch_size to prevent explosion
+        for val in self.p_in_buf.iter_mut() {
+            *val /= batch_size as f32;
+        }
+
+        self.last_p_in.copy_from_slice(&self.p_in_buf);
+        self.select_active_subnode();
+
         self.p_out_buf.clear();
-        self.p_out_buf.resize(batch_size * d_head, 0.0f32);
+        self.p_out_buf.resize(d_head, 0.0f32);
 
         // Compute through primary active subnode
         let active = self.active_subnode;
@@ -252,6 +266,7 @@ impl MicroBlockNode {
         let w_down = &self.subnodes[active].w_down;
 
         // Launch CUDA / Fused CudaMicroBlockRunner kernel (respecting self.use_cuda flag)
+        // We only process 1 superposed token (batch_size = 1 mathematically here)
         CudaMicroBlockRunner::execute_fused_with_stream_device(
             &self.p_in_buf,
             &self.k_cache,
@@ -260,25 +275,35 @@ impl MicroBlockNode {
             w_up,
             w_down,
             &mut self.p_out_buf,
-            batch_size,
+            1, // Superposed batch size
             d_head,
             ffn_dim,
             kv_len,
             norm_strat_val,
             alpha,
-            self.config.sphere_radius,
+            1.0, // config.sphere_radius removed
             None,
             self.use_cuda,
         );
 
         // Update particles, evaluation halting condition and metrics
-        for (i, p) in particles.iter_mut().enumerate() {
-            let out_slice = &self.p_out_buf[i * d_head..(i + 1) * d_head];
+        // Calculate the non-linear delta (reaction) produced by this node
+        let n_particles = particles.len() as f32;
+        let mut delta_n = vec![0.0f32; d_head];
+        for d in 0..d_head {
+            delta_n[d] = (self.p_out_buf[d] - self.p_in_buf[d]) / n_particles;
+        }
+
+        let active = self.active_subnode;
+        for p in particles.iter_mut() {
             let agreement_before = self.local_agreement(p, &p.payload);
             let previous_credit = p.credit;
             let previous_credit_valid = p.credit_valid;
 
-            p.payload.copy_from_slice(out_slice);
+            // Residual Superposition: Add the node's delta to the particle's distinct payload
+            for d in 0..d_head {
+                p.payload[d] += delta_n[d];
+            }
             p.credit_valid = false;
             if let (Some(before), Some(after)) =
                 (agreement_before, self.local_agreement(p, &p.payload))
@@ -310,40 +335,106 @@ impl MicroBlockNode {
         self.subnodes[active].activation_count += batch_size as u64;
     }
 
-    /// Chain-Rule Backpropagation Update Step (v = 0.9 * v + 0.1 * g)
-    pub fn update_weights_with_shard_err(&mut self, shard_err: &[f32], lr: f32) {
+    /// Chain-Rule Backpropagation using Direct Feedback Alignment (Broadcast Error)
+    pub fn update_weights_from_broadcast_error(
+        &mut self,
+        full_grad: &[f32],
+        seq_len: usize,
+        d_model: usize,
+        lr: f32,
+    ) {
         let d_head = self.config.d_head;
-        if shard_err.len() < d_head || self.recent_activation_count == 0 {
+        if self.recent_activation_count == 0 {
             return;
         }
 
         let ffn_dim = d_head * self.config.ffn_expansion;
         let primary = &mut self.subnodes[self.active_subnode];
 
-        let ffn_scale = (ffn_dim as f32).sqrt();
-        let head_scale = (d_head as f32).sqrt();
+        let primary = &mut self.subnodes[self.active_subnode];
 
-        // Chain-rule gradient update for W_down [ffn_dim, d_head]
-        for j in 0..ffn_dim {
-            let p_in_val = self.last_p_in[j % d_head];
-            for d in 0..d_head {
-                let idx = j * d_head + d;
-                let grad = (shard_err[d] * p_in_val) / ffn_scale;
-                primary.w_down[idx] -= lr * grad;
+        for (j, (&token_id, &shard_id)) in self.kv_token_ids.iter().zip(self.kv_shard_ids.iter()).enumerate() {
+            let offset = (token_id as usize) * d_model + (shard_id as usize) * d_head;
+            if offset + d_head > full_grad.len() {
+                continue;
             }
-        }
+            let err_slice = &full_grad[offset..offset + d_head];
+            let p_in_slice = &self.k_cache[j * d_head..(j + 1) * d_head];
 
-        // Chain-rule gradient update for W_gate and W_up [d_head, ffn_dim]
-        for d in 0..d_head {
-            let err_d = shard_err[d];
-            let p_in_d = self.last_p_in[d];
-            for j in 0..ffn_dim {
-                let idx = d * ffn_dim + j;
-                let grad_gate = (err_d * p_in_d * primary.w_down[j * d_head + d]) / head_scale;
-                let grad_up = (err_d * p_in_d * primary.w_down[j * d_head + d]) / head_scale;
+            // 1. Recompute SwiGLU forward pass for exactly this cached state (Gradient Checkpointing)
+            let mut ffn_inter = vec![0.0f32; ffn_dim];
+            let mut gate_arr = vec![0.0f32; ffn_dim];
+            let mut up_arr = vec![0.0f32; ffn_dim];
+            let mut swish_arr = vec![0.0f32; ffn_dim];
+            
+            for f in 0..ffn_dim {
+                let mut gate = 0.0f32;
+                let mut up = 0.0f32;
+                for d in 0..d_head {
+                    let m_val = p_in_slice[d];
+                    gate += m_val * primary.w_gate[d * ffn_dim + f];
+                    up += m_val * primary.w_up[d * ffn_dim + f];
+                }
 
-                primary.w_gate[idx] -= lr * grad_gate;
-                primary.w_up[idx] -= lr * grad_up;
+                
+                let sig = 1.0 / (1.0 + (-gate).exp());
+                let swish = gate * sig;
+                
+                gate_arr[f] = gate;
+                up_arr[f] = up;
+                swish_arr[f] = swish;
+                ffn_inter[f] = swish * up;
+            }
+
+            // 2. Exact backward pass
+            let mut d_inter = vec![0.0f32; ffn_dim];
+            for f in 0..ffn_dim {
+                let mut sum = 0.0f32;
+                for d in 0..d_head {
+                    sum += err_slice[d] * primary.w_down[f * d_head + d];
+                }
+                d_inter[f] = sum;
+            }
+
+            let mut d_gate_arr = vec![0.0f32; ffn_dim];
+            let mut d_up_arr = vec![0.0f32; ffn_dim];
+            for f in 0..ffn_dim {
+                let d_int = d_inter[f];
+                let d_swish = d_int * up_arr[f];
+                let d_up = d_int * swish_arr[f];
+                
+                let gate = gate_arr[f];
+                let sig = 1.0 / (1.0 + (-gate).exp());
+                let d_sig_d_gate = sig * (1.0 - sig);
+                let d_swish_d_gate = sig + gate * d_sig_d_gate;
+                
+                let d_gate = d_swish * d_swish_d_gate;
+                
+                d_gate_arr[f] = d_gate;
+                d_up_arr[f] = d_up;
+            }
+
+            // 3. Weight updates
+            let alpha = primary.alpha;
+            for f in 0..ffn_dim {
+                let inter_val = ffn_inter[f];
+                for d in 0..d_head {
+                    let idx = f * d_head + d;
+                    let grad = err_slice[d] * inter_val * alpha;
+                    primary.w_down[idx] -= lr * grad;
+                }
+            }
+
+            for d in 0..d_head {
+                let p_in_val = p_in_slice[d];
+                for f in 0..ffn_dim {
+                    let idx = d * ffn_dim + f;
+                    let grad_gate = d_gate_arr[f] * p_in_val * alpha;
+                    let grad_up = d_up_arr[f] * p_in_val * alpha;
+                    
+                    primary.w_gate[idx] -= lr * grad_gate;
+                    primary.w_up[idx] -= lr * grad_up;
+                }
             }
         }
     }
@@ -367,7 +458,7 @@ mod tests {
         assert_eq!(node.activation_count, 2);
         assert_eq!(node.cumulative_sequence_len, 2);
 
-        let shard_err = vec![0.01f32; 64];
-        node.update_weights_with_shard_err(&shard_err, 0.01);
+        let full_err = vec![0.01f32; 128]; // dummy full grad
+        node.update_weights_from_broadcast_error(&full_err, 2, 64, 0.01);
     }
 }

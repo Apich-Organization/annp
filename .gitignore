@@ -2,3 +2,6 @@
 checkpoints/
 logs/
 patch.patch
+test_debug.rs
+tmp/annp_chunks/
+scratch.py

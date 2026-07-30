@@ -22,22 +22,12 @@ pub struct ModelSection {
     pub initial_energy: f32,
     pub max_hop: u16,
     pub min_hop: u16,
-    pub epsilon_p: f32,
-    pub epsilon_h: f32,
-    pub temperature: f32,
     pub norm_strategy: String, // "RMSNorm" or "SphereNorm"
-    pub alpha_init: f32,
-    pub sphere_radius: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvictionSection {
-    pub lambda_temporal: f32,
-    pub lambda_frequency: f32,
-    pub eviction_threshold: f32,
-    pub neurogenesis_threshold: Option<u64>,
     pub subnode_max: Option<usize>,
-    pub progressive_hardening_factor: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,20 +51,10 @@ impl Default for AnnpTomlConfig {
                 initial_energy: 1.0,
                 max_hop: 100,
                 min_hop: 3,
-                epsilon_p: 1e-4,
-                epsilon_h: 0.05,
-                temperature: 1.0,
                 norm_strategy: "RMSNorm".to_string(),
-                alpha_init: 0.01,
-                sphere_radius: 1.0,
             },
             eviction: EvictionSection {
-                lambda_temporal: 0.001,
-                lambda_frequency: 0.01,
-                eviction_threshold: 1e-4,
-                neurogenesis_threshold: Some(50),
                 subnode_max: Some(8),
-                progressive_hardening_factor: Some(0.5),
             },
             stage0_wave: StageConfig {
                 enabled: true,
@@ -123,21 +103,8 @@ impl AnnpTomlConfig {
             initial_energy: self.model.initial_energy,
             max_hop: self.model.max_hop,
             min_hop: self.model.min_hop,
-            epsilon_p: self.model.epsilon_p,
-            epsilon_h: self.model.epsilon_h,
-            temperature: self.model.temperature,
             norm_strategy: norm_strat,
-            alpha_init: self.model.alpha_init,
-            sphere_radius: self.model.sphere_radius,
-            lambda_temporal: self.eviction.lambda_temporal,
-            lambda_frequency: self.eviction.lambda_frequency,
-            eviction_threshold: self.eviction.eviction_threshold,
-            neurogenesis_threshold: self.eviction.neurogenesis_threshold.unwrap_or(50),
             subnode_max: self.eviction.subnode_max.unwrap_or(8),
-            progressive_hardening_factor: self.eviction.progressive_hardening_factor.unwrap_or(0.5),
-            queue_backpressure_alpha: 0.05,
-            min_routing_entropy_noise: 0.05,
-            max_alpha_residual: 0.1,
         }
     }
 }

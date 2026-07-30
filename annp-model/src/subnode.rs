@@ -50,9 +50,10 @@ impl Subnode {
         }
     }
 
-    /// Spawns a new subnode by inheriting parent subnode weights with a small perturbation residual
-    pub fn spawn_from_parent(subnode_id: usize, parent: &Subnode, epsilon: f32) -> Self {
+    /// Spawns a new subnode by inheriting parent subnode weights with a small orthogonal/mathematical perturbation
+    pub fn spawn_from_parent(subnode_id: usize, parent: &Subnode, d_head: usize, ffn_dim: usize) -> Self {
         let mut rng = rand::rng();
+        let epsilon = (1.0 / (d_head as f32 * ffn_dim as f32).sqrt()) * 0.01;
 
         let w_gate = parent
             .w_gate

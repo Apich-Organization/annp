@@ -470,10 +470,9 @@ impl CudaMicroBlockRunner {
                     }
                 }
 
-                let head_scale_inv = 1.0 / (d_head as f32).sqrt();
                 for j in 0..ffn_dim {
-                    let gate = gate_arr[j] * head_scale_inv;
-                    let up = up_arr[j] * head_scale_inv;
+                    let gate = gate_arr[j];
+                    let up = up_arr[j];
                     let swish = gate / (1.0 + (-gate).exp());
                     ffn_inter[j] = swish * up;
                 }
@@ -495,10 +494,6 @@ impl CudaMicroBlockRunner {
                     }
                 }
 
-                let ffn_scale_inv = 1.0 / (ffn_dim as f32).sqrt();
-                for d in 0..d_head {
-                    down_arr[d] *= ffn_scale_inv;
-                }
 
                 // 5. Norm 2 & Output
                 let min_v = _mm256_set1_ps(-100.0);
@@ -642,9 +637,6 @@ impl CudaMicroBlockRunner {
 
             // 3. SwiGLU FFN
             let mut ffn_inter = vec![0.0f32; ffn_dim];
-            let head_scale_inv = 1.0 / (d_head as f32).sqrt();
-            let ffn_scale_inv = 1.0 / (ffn_dim as f32).sqrt();
-
             for j in 0..ffn_dim {
                 let mut gate = 0.0f32;
                 let mut up = 0.0f32;
@@ -653,8 +645,6 @@ impl CudaMicroBlockRunner {
                     gate += m_val * w_gate[d * ffn_dim + j];
                     up += m_val * w_up[d * ffn_dim + j];
                 }
-                gate *= head_scale_inv;
-                up *= head_scale_inv;
                 let swish = gate / (1.0 + (-gate).exp());
                 ffn_inter[j] = swish * up;
             }
@@ -667,9 +657,7 @@ impl CudaMicroBlockRunner {
                     down_arr[d] += inter_val * w_down[j * d_head + d];
                 }
             }
-            for d in 0..d_head {
-                down_arr[d] *= ffn_scale_inv;
-            }
+
 
             // 5. Norm 2 & Output
             if norm_strategy == 0 {

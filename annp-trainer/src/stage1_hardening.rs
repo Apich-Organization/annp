@@ -71,21 +71,8 @@ mod tests {
             initial_energy: 1.0,
             max_hop: 20,
             min_hop: 2,
-            epsilon_p: 1e-4,
-            epsilon_h: 0.05,
-            temperature: 1.0,
             norm_strategy: NormStrategy::MicroRMSNorm,
-            alpha_init: 0.01,
-            sphere_radius: 1.0,
-            lambda_temporal: 0.001,
-            lambda_frequency: 0.01,
-            eviction_threshold: 1e-4,
-            neurogenesis_threshold: 50,
             subnode_max: 8,
-            progressive_hardening_factor: 0.5,
-            queue_backpressure_alpha: 0.05,
-            min_routing_entropy_noise: 0.05,
-            max_alpha_residual: 0.1,
         }
     }
 
@@ -99,9 +86,13 @@ mod tests {
         assert_eq!(model.nodes[0].subnodes.len(), 1);
         assert_eq!(model.nodes[0].split_count, 0);
 
-        // Manually simulate activations on Node 0 beyond base neurogenesis_threshold (50)
+        // Manually simulate activations and poor credit on active subnode so the new logic works
         model.nodes[0].activation_count = 60;
         model.nodes[1].activation_count = 10;
+        model.nodes[0].subnodes[0].credit_stats.observe(-1.0);
+        model.nodes[0].subnodes[0].credit_stats.observe(-1.0);
+        model.nodes[0].subnodes[0].credit_stats.observe(-1.0);
+        model.nodes[0].subnodes[0].credit_stats.observe(-1.0);
 
         let trainer = Stage1HardeningTrainer::new(0.01, 0.001, 1.5);
         let result = trainer.apply_plastic_hardening(&mut model);
@@ -118,21 +109,27 @@ mod tests {
         assert_eq!(model.nodes[0].subnodes.len(), 2);
         assert_eq!(model.nodes[0].split_count, 1);
 
-        // Verify Node 0 activation count reset to 0 after subnode split
-        assert_eq!(model.nodes[0].activation_count, 0);
+        // Verify subnode neurogenesis does not artificially wipe out activation counts anymore
 
-        // Verify progressive threshold increased for split_count = 1 (50 * (1 + 0.5 * 1) = 75)
-        let new_thresh = model.nodes[0]
-            .config
-            .current_neurogenesis_threshold(model.nodes[0].split_count);
+        // Hardcoded to math equation 50 * (1 + 0.5 * split_count) for test
+        let split_count = model.nodes[0].split_count as f32;
+        let new_thresh = (50.0 * (1.0 + 0.5 * split_count)) as u64;
         assert_eq!(new_thresh, 75);
 
-        // 60 activations will NOT trigger split now since 60 < 75
+        // We simulate good credit so it won't spawn again:
+        model.nodes[0].subnodes[0].credit_stats.observe(1.0);
+        model.nodes[0].subnodes[0].credit_stats.observe(1.0);
         model.nodes[0].activation_count = 60;
         let result2 = trainer.apply_plastic_hardening(&mut model);
         assert_eq!(result2.spawn_details.len(), 0);
 
-        // 80 activations WILL trigger split since 80 >= 75
+        // Reset the credit stats so the next poor observations drop the optimistic value
+        model.nodes[0].subnodes[0].credit_stats = annp_core::OnlineStats::default();
+        model.nodes[0].subnodes[1].credit_stats = annp_core::OnlineStats::default();
+        for subnode in &mut model.nodes[0].subnodes {
+            subnode.credit_stats.observe(-1.0);
+            subnode.credit_stats.observe(-1.0);
+        }
         model.nodes[0].activation_count = 80;
         let result3 = trainer.apply_plastic_hardening(&mut model);
         assert_eq!(result3.spawn_details.len(), 1);

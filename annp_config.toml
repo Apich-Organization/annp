@@ -1,29 +1,19 @@
 [model]
-num_shards = 64            # Parallel input particle shards (Total d_model = num_shards * d_head = 64 * 64 = 4096)
-mesh_rows = 128            # 2D Grid rows (128 x 128 = 16,384 fixed micro-block nodes)
-mesh_cols = 128
-d_head = 64                # Per-particle vector head dimension
-ffn_expansion = 8          # Micro-Block FFN expansion (ffn_dim = 64 * 8 = 512)
+num_shards = 4
+mesh_rows = 16
+mesh_cols = 16
+d_head = 64
+ffn_expansion = 8
 initial_energy = 1.0
-max_hop = 256
-min_hop = 16
-epsilon_p = 0.0001
-epsilon_h = 0.05
-temperature = 1.0
-norm_strategy = "RMSNorm"  # "RMSNorm" or "SphereNorm"
-alpha_init = 0.1
-sphere_radius = 1.0
+max_hop = 32
+min_hop = 2
+norm_strategy = "RMSNorm"
 
 [eviction]
-lambda_temporal = 0.001
-lambda_frequency = 0.01
-eviction_threshold = 0.0001
-neurogenesis_threshold = 65536         # Base activation count before initial subnode split
-subnode_max = 8                       # Maximum internal subnodes per micro-block container
-progressive_hardening_factor = 0.5    # Progressive threshold growth factor: T_neuro(k) = T_base * (1 + gamma * k)
+subnode_max = 8
 
 [stage0_wave]
-enabled = false
+enabled = true
 epochs = 8
 learning_rate = 0.02
 dataset_path = "stage_0_1-32001.json"
@@ -31,7 +21,7 @@ dataset_format = "json"
 
 [stage1_hardening]
 enabled = true
-epochs = 500
+epochs = 12
 learning_rate = 0.01
 dataset_path = "stage_1_1-32001.json"
 dataset_format = "json"

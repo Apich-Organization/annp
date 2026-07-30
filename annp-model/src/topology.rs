@@ -65,7 +65,7 @@ impl RoutingTable {
     /// Select from local content affinity and empirically observed local credit.
     /// Both are normalized only across this node's own neighbors; no broadcast,
     /// global scale, or manually weighted score is involved.
-    pub fn select_next_hop(&self, particle: &Particle, _temperature: f32) -> usize {
+    pub fn select_next_hop(&self, particle: &Particle) -> usize {
         let num_neighbors = self.neighbors.len();
         if num_neighbors == 0 {
             return 0;

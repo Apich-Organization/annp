@@ -16,21 +16,8 @@ fn main() -> candle_core::Result<()> {
         initial_energy: 1.0,
         max_hop: 100,
         min_hop: 5,
-        epsilon_p: 1e-4,
-        epsilon_h: 0.1,
-        temperature: 1.0,
         norm_strategy: NormStrategy::MicroRMSNorm,
-        alpha_init: 0.01,
-        sphere_radius: 1.0,
-        lambda_temporal: 0.001,
-        lambda_frequency: 0.01,
-        eviction_threshold: 1e-4,
-        neurogenesis_threshold: 50,
         subnode_max: 8,
-        progressive_hardening_factor: 0.5,
-        queue_backpressure_alpha: 0.05,
-        min_routing_entropy_noise: 0.05,
-        max_alpha_residual: 0.1,
     };
 
     let device = Device::Cpu;

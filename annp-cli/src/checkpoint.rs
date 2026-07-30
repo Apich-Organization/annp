@@ -34,7 +34,6 @@ pub struct ModelCheckpoint {
     pub config: MicroBlockConfig,
     pub nodes: Vec<NodeCheckpoint>,
     pub routing_tables: Vec<RoutingTable>,
-    pub w_egress: Vec<f32>,
 }
 
 impl ModelCheckpoint {
@@ -133,13 +132,6 @@ impl ModelCheckpoint {
                 file.write_all(down_bytes)?;
             }
         }
-
-        // 2. Write Egress Serializer Weights
-        let egress_bytes = unsafe {
-            std::slice::from_raw_parts(self.w_egress.as_ptr() as *const u8, self.w_egress.len() * 4)
-        };
-        file.write_all(&(self.w_egress.len() as u32).to_le_bytes())?;
-        file.write_all(egress_bytes)?;
 
         // 3. Write P2P Grid Q-Routing Tables
         for rt in &self.routing_tables {
@@ -330,15 +322,6 @@ impl ModelCheckpoint {
             }
         }
 
-        // 2. Read Egress Serializer Weights
-        file.read_exact(&mut buf4)?;
-        let egress_len = u32::from_le_bytes(buf4) as usize;
-        let mut w_egress = vec![0.0f32; egress_len];
-        let egress_bytes = unsafe {
-            std::slice::from_raw_parts_mut(w_egress.as_mut_ptr() as *mut u8, egress_len * 4)
-        };
-        file.read_exact(egress_bytes)?;
-
         // 3. Read P2P Grid Q-Routing Tables
         let mut routing_tables = Vec::with_capacity(num_routes);
         for _ in 0..num_routes {
@@ -375,7 +358,6 @@ impl ModelCheckpoint {
             config,
             nodes,
             routing_tables,
-            w_egress,
         })
     }
 
@@ -408,9 +390,7 @@ impl ModelCheckpoint {
             }
         }
 
-        if !self.w_egress.is_empty() {
-            model.serializer.w_egress = self.w_egress.clone();
-        }
+
         if !self.routing_tables.is_empty() {
             model.topology.routing_tables = self.routing_tables.clone();
             model.topology.num_nodes = model.nodes.len();
@@ -451,7 +431,6 @@ impl ModelCheckpoint {
             config: model.config.clone(),
             nodes,
             routing_tables: model.topology.routing_tables.clone(),
-            w_egress: model.serializer.w_egress.clone(),
         }
     }
 }
@@ -467,7 +446,6 @@ mod tests {
         config.mesh_rows = 4;
         config.mesh_cols = 4;
         config.d_head = 32;
-        config.alpha_init = 0.05;
 
         let model = ANNPModel::new(16, 2, config.clone(), Device::Cpu);
         let mut ckpt = ModelCheckpoint::extract_from_model(&model, 1, 5);

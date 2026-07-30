@@ -93,15 +93,6 @@ enum Commands {
         /// Override min_hop floor
         #[arg(long)]
         min_hop: Option<u16>,
-        /// Override neurogenesis_threshold
-        #[arg(long)]
-        neurogenesis_threshold: Option<u64>,
-        /// Override routing temperature
-        #[arg(long)]
-        temperature: Option<f32>,
-        /// Override alpha_init
-        #[arg(long)]
-        alpha_init: Option<f32>,
     },
     /// Export P2P mesh topology and Q-Routing tables from checkpoint
     Export {
@@ -163,17 +154,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             max_hop,
             min_hop,
-            neurogenesis_threshold,
-            temperature,
-            alpha_init,
         } => execute_edit_model(
             checkpoint,
             config,
             max_hop,
             min_hop,
-            neurogenesis_threshold,
-            temperature,
-            alpha_init,
         )?,
         Commands::Export { checkpoint, out } => execute_export(checkpoint, out)?,
     }

@@ -47,35 +47,14 @@ impl Stage0WaveTrainer {
 
         let diff_vec = diff.flatten_all()?.to_vec1::<f32>()?;
 
-        // `forward` returns RMS-bounded egress vectors.  Transform the MSE
-        // residual through that final normalization before updating either the
-        // serializer or the particle-side approximation.
-        let projected_grad = model.serializer.backprop_output_rms(&diff_vec);
-        let input_grad = model.serializer.input_gradient(&projected_grad);
+        // `forward` returns RMS-bounded egress vectors. We apply the gradient directly 
+        // to the shard errors since the output nodes now emit directly without projection.
+        let input_grad = diff_vec;
 
-        // 1. Update Egress Serializer with full diff_vec
-        model.serializer.update_weights(&projected_grad, lr_decay);
-
-        // 2. Compute exact Shard-Specific Error Vectors: shard_err[s] of dimension d_head
-        let mut shard_errs = vec![vec![0.0f32; d_head]; num_shards];
-        for t in 0..seq_len {
-            for s in 0..num_shards {
-                let base_idx = t * d_model + s * d_head;
-                for d in 0..d_head {
-                    shard_errs[s][d] += input_grad[base_idx + d];
-                }
-            }
-        }
-        for s in 0..num_shards {
-            for d in 0..d_head {
-                shard_errs[s][d] /= seq_len as f32;
-            }
-        }
-
-        // 3. Apply exact shard-specific residual update to active nodes
-        for (i, node) in model.nodes.iter_mut().enumerate() {
-            let shard_idx = i % num_shards;
-            node.update_weights_with_shard_err(&shard_errs[shard_idx], lr_decay);
+        // Broadcast the exact residual error to all active nodes.
+        // Each node will correlate this global error with its local sequence history.
+        for node in model.nodes.iter_mut() {
+            node.update_weights_from_broadcast_error(&input_grad, seq_len, d_model, lr_decay);
         }
 
         Ok(mse_loss)
@@ -98,21 +77,8 @@ mod tests {
             initial_energy: 1.0,
             max_hop: 20,
             min_hop: 2,
-            epsilon_p: 1e-4,
-            epsilon_h: 0.05,
-            temperature: 1.0,
             norm_strategy: NormStrategy::MicroRMSNorm,
-            alpha_init: 0.01,
-            sphere_radius: 1.0,
-            lambda_temporal: 0.001,
-            lambda_frequency: 0.01,
-            eviction_threshold: 1e-4,
-            neurogenesis_threshold: 50,
             subnode_max: 8,
-            progressive_hardening_factor: 0.5,
-            queue_backpressure_alpha: 0.05,
-            min_routing_entropy_noise: 0.05,
-            max_alpha_residual: 0.1,
         }
     }
 

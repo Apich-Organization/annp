@@ -1,6 +1,5 @@
 use crate::micro_block::MicroBlockNode;
 use crate::scattering::TokenScattering;
-use crate::serializer::EgressSerializer;
 use crate::topology::TopologyGrid;
 use annp_core::{MicroBlockConfig, Particle};
 use candle_core::{Device, Result, Tensor};
@@ -45,12 +44,10 @@ pub struct ANNPModel {
     pub scattering: TokenScattering,
     pub nodes: Vec<MicroBlockNode>,
     pub topology: TopologyGrid,
-    pub serializer: EgressSerializer,
     pub device: Device,
     // Reusable double-buffer queues for zero-alloc P2P particle routing
     pub node_queues: Vec<Vec<Particle>>,
     pub next_queues: Vec<Vec<Particle>>,
-    pub wave_id: u64,
 }
 
 impl ANNPModel {
@@ -76,7 +73,6 @@ impl ANNPModel {
         let d_head = config.d_head;
         let scattering = TokenScattering::new(num_shards, d_head, 0.1);
         let topology = TopologyGrid::new(num_nodes, d_head, 4);
-        let serializer = EgressSerializer::new(d_head, num_shards);
 
         let nodes = (0..num_nodes)
             .map(|i| MicroBlockNode::new(i, config.clone(), 64, use_cuda))
@@ -91,11 +87,9 @@ impl ANNPModel {
             scattering,
             nodes,
             topology,
-            serializer,
             device,
             node_queues,
             next_queues,
-            wave_id: 0,
         }
     }
 
@@ -105,7 +99,7 @@ impl ANNPModel {
         for node in self.nodes.iter_mut() {
             node.k_cache.clear();
             node.v_cache.clear();
-            node.kv_wave_ids.clear();
+            node.kv_traces.clear();
             node.kv_token_ids.clear();
             node.kv_shard_ids.clear();
             node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
@@ -113,12 +107,11 @@ impl ANNPModel {
         }
 
         let (seq_len, _) = embeddings.dims2()?;
-        self.wave_id = self.wave_id.wrapping_add(1);
         let mut initial_particles = self
             .scattering
             .scatter_embeddings(embeddings, &self.config)?;
         for particle in &mut initial_particles {
-            particle.wave_id = self.wave_id;
+            particle.trace_concentration = 1.0;
         }
 
         for q in self.node_queues.iter_mut() {
@@ -232,7 +225,7 @@ impl ANNPModel {
                         halted_particles.push(p);
                     } else {
                         let mut next_hop = self.topology.routing_tables[node_id]
-                            .select_next_hop(&p, self.config.temperature);
+                            .select_next_hop(&p);
 
                         // P2P Decentralized Backpressure: if candidate target queue is full, overflow to neighbor in local P2P mesh
                         if self.next_queues[next_hop].len() > 64 {
@@ -261,9 +254,36 @@ impl ANNPModel {
             }
         }
 
-        // Serializer reconstruction
-        self.serializer
-            .reconstruct_sequence(seq_len, &halted_particles, &self.device)
+        // Fully Decentralized Reconstruction: 
+        // Emulate motor nodes emitting their state without a centralized dense projector.
+        let d_model = self.config.d_head * self.config.num_shards;
+        let mut full_data = vec![0.0f32; seq_len * d_model];
+
+        for p in halted_particles {
+            let t = p.header.origin_token_id as usize;
+            let shard = p.header.shard_id as usize;
+
+            if t < seq_len && shard < self.config.num_shards {
+                let token_offset = t * d_model;
+                let shard_offset = token_offset + shard * self.config.d_head;
+
+                for d in 0..self.config.d_head {
+                    if d < p.payload.len() {
+                        full_data[shard_offset + d] = p.payload[d];
+                    }
+                }
+            }
+        }
+        
+        // Micro-RMS bounding to prevent network explosion dynamically
+        for row in full_data.chunks_exact_mut(d_model) {
+            let rms = (row.iter().map(|x| x * x).sum::<f32>() / d_model as f32 + 1e-8).sqrt();
+            for value in row {
+                *value /= rms;
+            }
+        }
+
+        Tensor::from_vec(full_data, (seq_len, d_model), &self.device)
     }
 }
 
@@ -282,21 +302,8 @@ mod tests {
             initial_energy: 1.0,
             max_hop: 10,
             min_hop: 2,
-            epsilon_p: 1e-4,
-            epsilon_h: 0.05,
-            temperature: 1.0,
             norm_strategy: NormStrategy::MicroRMSNorm,
-            alpha_init: 0.01,
-            sphere_radius: 1.0,
-            lambda_temporal: 0.001,
-            lambda_frequency: 0.01,
-            eviction_threshold: 1e-4,
-            neurogenesis_threshold: 50,
             subnode_max: 8,
-            progressive_hardening_factor: 0.5,
-            queue_backpressure_alpha: 0.05,
-            min_routing_entropy_noise: 0.05,
-            max_alpha_residual: 0.1,
         }
     }
 

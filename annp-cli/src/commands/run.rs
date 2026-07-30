@@ -28,11 +28,10 @@ pub fn execute_run(
         &format!("Loading ANNP Configuration from: {:?}", config_path),
     );
     let toml_config = AnnpTomlConfig::load_from_file(config_path)?;
-    let mut core_config = toml_config.to_core_config();
+    let core_config = toml_config.to_core_config();
 
     if let Some(tau) = temperature_override {
-        println!("Overriding Routing Temperature: tau = {:.3}", tau);
-        core_config.temperature = tau;
+        println!("Overriding Routing Temperature: tau = {:.3} (ignored, parameter removed)", tau);
     }
 
     let (device, use_cuda) = select_device(&device_target);
