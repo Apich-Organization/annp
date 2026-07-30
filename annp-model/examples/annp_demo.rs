@@ -1,6 +1,6 @@
-use annp_core::{MicroBlockConfig, NormStrategy};
+use annp_core::MicroBlockConfig;
 use annp_model::ANNPModel;
-use annp_trainer::{Stage0WaveTrainer, Stage1HardeningTrainer};
+use annp_trainer::{Trainer};
 use candle_core::{Device, Tensor};
 
 fn main() -> candle_core::Result<()> {
@@ -16,7 +16,6 @@ fn main() -> candle_core::Result<()> {
         initial_energy: 1.0,
         max_hop: 100,
         min_hop: 5,
-        norm_strategy: NormStrategy::MicroRMSNorm,
         subnode_max: 8,
     };
 
@@ -33,27 +32,21 @@ fn main() -> candle_core::Result<()> {
         input_embeddings.shape()
     );
 
-    // Forward Pass Demonstration
-    let output_embeddings = model.forward(&input_embeddings)?;
+    let (output_embeddings, _) = model.forward(&input_embeddings, 0)?;
     println!(
         "Output Sequence Tensor Shape: {:?}",
         output_embeddings.shape()
     );
 
-    println!("\n=== Running Streamlined 2-Stage Evolutionary Trainer Demonstration ===");
+    println!("\n=== Running Streamlined Trainer Demonstration ===");
 
-    // Stage 0: Global Wave Exploration
-    let mut stage0 = Stage0WaveTrainer::new(1e-3);
-    let loss0 = stage0.train_step(&mut model, &input_embeddings)?;
-    println!("[Stage 0: Global Wave Exploration] Loss: {:.6}", loss0);
+    // Training
+    let mut trainer = Trainer::new(1e-3);
+    let loss0 = trainer.train_step(&mut model, &input_embeddings)?;
+    println!("[Training Step 1] Loss: {:.6}", loss0);
 
-    // Stage 1: Plastic Hardening & Precision Fine-Tuning
-    let stage1 = Stage1HardeningTrainer::new(1e-3, 0.001, 1.5);
-    stage1.apply_plastic_hardening(&mut model);
-    println!(
-        "[Stage 1: Plastic Hardening] Applied to all {} Micro-Block nodes.",
-        model.num_nodes
-    );
+    let loss1 = trainer.train_step(&mut model, &input_embeddings)?;
+    println!("[Training Step 2] Loss: {:.6}", loss1);
 
     println!("\nANNP Streamlined Pipeline successfully executed with industrial standards!");
     use std::io::Write;

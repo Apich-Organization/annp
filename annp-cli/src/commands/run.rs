@@ -91,7 +91,8 @@ pub fn execute_run(
     let mut last_output = Tensor::zeros((seq_len, d_model), candle_core::DType::F32, &device)?;
 
     for _ in 0..iterations {
-        last_output = model.forward(&input_tensor)?;
+        let (out, _) = model.forward(&input_tensor, 0)?;
+        last_output = out;
 
         if continual_mode {
             // Placeholder: Continual mode no longer uses Stage1HardeningTrainer

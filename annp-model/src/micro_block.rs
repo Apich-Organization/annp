@@ -17,9 +17,13 @@ pub struct MicroBlockNode {
     pub max_kv_len: usize,
     // Last activation cache for exact chain-rule backpropagation
     pub last_p_in: Vec<f32>, // [d_head]
+    pub last_prediction: Vec<f32>, // [d_head]
+    pub last_token_id: Option<u32>,
     // Node state statistics
     pub cumulative_sequence_len: u64, // S_j for plastic hardening
     pub activation_count: u64,
+    pub local_loss_accumulator: f32,
+    pub local_loss_count: usize,
     /// Reset at each wave. Only nodes that actually participated in the most
     /// recent local dynamics may receive that wave's training signal.
     pub recent_activation_count: u64,
@@ -62,6 +66,10 @@ impl MicroBlockNode {
             kv_shard_ids: Vec::with_capacity(max_kv_len),
             max_kv_len,
             last_p_in,
+            last_prediction: vec![0.0f32; d_head],
+            last_token_id: None,
+            local_loss_accumulator: 0.0,
+            local_loss_count: 0,
             cumulative_sequence_len: 0,
             activation_count: 0,
             recent_activation_count: 0,
@@ -104,6 +112,7 @@ impl MicroBlockNode {
         self.kv_traces.push(particle.trace_concentration);
         self.kv_token_ids.push(particle.header.origin_token_id);
         self.kv_shard_ids.push(particle.header.shard_id);
+        self.last_token_id = Some(particle.header.origin_token_id);
     }
 
     /// Spawn only when the active local dynamics have empirical evidence of no
@@ -175,22 +184,6 @@ impl MicroBlockNode {
         old_len - self.subnodes.len()
     }
 
-    fn select_active_subnode(&mut self) {
-        if self.subnodes.len() <= 1 {
-            self.active_subnode = 0;
-            return;
-        }
-        // A new expert is automatically explored because its uncertainty is
-        // infinite; established experts compete by local credit only.
-        self.active_subnode = self
-            .subnodes
-            .iter()
-            .enumerate()
-            .map(|(index, subnode)| (index, subnode.credit_stats.optimistic_value()))
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-    }
 
     fn local_agreement(&self, particle: &Particle, payload: &[f32]) -> Option<f32> {
         let d_head = self.config.d_head;
@@ -251,36 +244,153 @@ impl MicroBlockNode {
         }
 
         self.last_p_in.copy_from_slice(&self.p_in_buf);
-        self.select_active_subnode();
+        
+        let mut majority_token_id = 0;
+        if let Some(p) = particles.first() {
+            majority_token_id = p.header.origin_token_id;
+        }
+
+        // Local Predictive Learning (Temporal Difference)
+        // If this token is exactly the next token from our last processed token
+        if let Some(last_id) = self.last_token_id {
+            if majority_token_id == last_id + 1 {
+                // We predicted `self.last_prediction`. The reality is `self.p_in_buf`.
+                // Local Error E = y_prev - x_curr
+                let mut local_err = vec![0.0f32; d_head];
+                for d in 0..d_head {
+                    local_err[d] = self.last_prediction[d] - self.p_in_buf[d];
+                }
+                
+                // Backprop E through all subnodes based on `last_p_in` (which generated `last_prediction`)
+                let lr = 0.01 / (self.config.max_hop as f32); // Configurable local LR
+                let weight_decay = 1e-4f32;
+                let wd_factor = 1.0 - lr * weight_decay;
+
+                // We need the normed input that was used for the last prediction
+                let mut p_in_normed = vec![0.0f32; d_head];
+                let sq_sum_ffn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
+                let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
+                for d in 0..d_head {
+                    p_in_normed[d] = self.last_p_in[d] * inv_rms_ffn;
+                }
+
+                for subnode in self.subnodes.iter_mut() {
+                    let mut ffn_inter = vec![0.0f32; ffn_dim];
+                    let mut gate_arr = vec![0.0f32; ffn_dim];
+                    let mut up_arr = vec![0.0f32; ffn_dim];
+                    let mut swish_arr = vec![0.0f32; ffn_dim];
+
+                    for f in 0..ffn_dim {
+                        let mut gate = 0.0f32;
+                        let mut up = 0.0f32;
+                        for d in 0..d_head {
+                            let m_val = p_in_normed[d];
+                            gate += m_val * subnode.w_gate[d * ffn_dim + f];
+                            up += m_val * subnode.w_up[d * ffn_dim + f];
+                        }
+
+                        let sig = 1.0 / (1.0 + (-gate).exp());
+                        let swish = gate * sig;
+
+                        gate_arr[f] = gate;
+                        up_arr[f] = up;
+                        swish_arr[f] = swish;
+                        ffn_inter[f] = swish * up;
+                    }
+
+                    let mut d_inter = vec![0.0f32; ffn_dim];
+                    for f in 0..ffn_dim {
+                        let mut sum = 0.0f32;
+                        for d in 0..d_head {
+                            sum += local_err[d] * subnode.w_down[f * d_head + d];
+                        }
+                        d_inter[f] = sum;
+                    }
+
+                    let mut d_gate_arr = vec![0.0f32; ffn_dim];
+                    let mut d_up_arr = vec![0.0f32; ffn_dim];
+                    for f in 0..ffn_dim {
+                        let d_int = d_inter[f];
+                        let d_swish = d_int * up_arr[f];
+                        let d_up = d_int * swish_arr[f];
+
+                        let gate = gate_arr[f];
+                        let sig = 1.0 / (1.0 + (-gate).exp());
+                        let d_sig_d_gate = sig * (1.0 - sig);
+                        let d_swish_d_gate = sig + gate * d_sig_d_gate;
+
+                        let d_gate = d_swish * d_swish_d_gate;
+                        d_gate_arr[f] = d_gate;
+                        d_up_arr[f] = d_up;
+                    }
+
+                    let alpha = subnode.alpha;
+                    for f in 0..ffn_dim {
+                        let inter_val = ffn_inter[f];
+                        for d in 0..d_head {
+                            let idx = f * d_head + d;
+                            let grad = local_err[d] * inter_val * alpha;
+                            subnode.w_down[idx] = subnode.w_down[idx] * wd_factor - lr * grad;
+                        }
+                    }
+
+                    for d in 0..d_head {
+                        let p_in_val = p_in_normed[d];
+                        for f in 0..ffn_dim {
+                            let idx = d * ffn_dim + f;
+                            let grad_gate = d_gate_arr[f] * p_in_val * alpha;
+                            let grad_up = d_up_arr[f] * p_in_val * alpha;
+
+                            subnode.w_gate[idx] = subnode.w_gate[idx] * wd_factor - lr * grad_gate;
+                            subnode.w_up[idx] = subnode.w_up[idx] * wd_factor - lr * grad_up;
+                        }
+                    }
+                }
+                
+                // Keep track of average error magnitude in primary subnode for splitting criteria
+                let err_mag: f32 = local_err.iter().map(|&x| x.abs()).sum::<f32>() / d_head as f32;
+                // Observe negative error so that higher error means worse credit
+                self.subnodes[0].credit_stats.observe(-err_mag);
+                self.local_loss_accumulator += err_mag;
+                self.local_loss_count += 1;
+            }
+        }
 
         self.p_out_buf.clear();
         self.p_out_buf.resize(d_head, 0.0f32);
+        self.p_out_buf.copy_from_slice(&self.p_in_buf); // Base residual
 
-        // Compute through primary active subnode
-        let active = self.active_subnode;
-        let alpha = self.subnodes[active].alpha;
-        let w_gate = &self.subnodes[active].w_gate;
-        let w_up = &self.subnodes[active].w_up;
-        let w_down = &self.subnodes[active].w_down;
+        // Forward pass: Sum over all subnodes (MoE)
+        let mut temp_out = vec![0.0f32; d_head];
+        for subnode in self.subnodes.iter() {
+            let alpha = subnode.alpha;
+            let w_gate = &subnode.w_gate;
+            let w_up = &subnode.w_up;
+            let w_down = &subnode.w_down;
 
-        // Launch CUDA / Fused CudaMicroBlockRunner kernel (respecting self.use_cuda flag)
-        // We only process 1 superposed token (batch_size = 1 mathematically here)
-        CudaMicroBlockRunner::execute_fused_with_stream_device(
-            &self.p_in_buf,
-            &self.k_cache,
-            &self.v_cache,
-            w_gate,
-            w_up,
-            w_down,
-            &mut self.p_out_buf,
-            1, // Superposed batch size
-            d_head,
-            ffn_dim,
-            kv_len,
-            alpha,
-            None,
-            self.use_cuda,
-        );
+            CudaMicroBlockRunner::execute_fused_with_stream_device(
+                &self.p_in_buf,
+                &self.k_cache,
+                &self.v_cache,
+                w_gate,
+                w_up,
+                w_down,
+                &mut temp_out,
+                1, // Superposed batch size
+                d_head,
+                ffn_dim,
+                kv_len,
+                alpha,
+                None,
+                self.use_cuda,
+            );
+            
+            for d in 0..d_head {
+                self.p_out_buf[d] += temp_out[d] - self.p_in_buf[d];
+            }
+        }
+        
+        self.last_prediction.copy_from_slice(&self.p_out_buf);
 
         // Update particles, evaluation halting condition and metrics
         // Calculate the non-linear delta (reaction) produced by this node
@@ -331,123 +441,7 @@ impl MicroBlockNode {
         self.subnodes[active].activation_count += batch_size as u64;
     }
 
-    /// Chain-Rule Backpropagation using Direct Feedback Alignment (Broadcast Error)
-    pub fn update_weights_from_broadcast_error(
-        &mut self,
-        full_grad: &[f32],
-        seq_len: usize,
-        d_model: usize,
-        lr: f32,
-    ) {
-        let d_head = self.config.d_head;
-        if self.recent_activation_count == 0 {
-            return;
-        }
 
-        let ffn_dim = d_head * self.config.ffn_expansion;
-        let primary = &mut self.subnodes[self.active_subnode];
-
-        let lr_diluted = lr / (self.config.max_hop as f32);
-        let weight_decay = 1e-4f32;
-
-        for (j, (&token_id, &shard_id)) in self
-            .kv_token_ids
-            .iter()
-            .zip(self.kv_shard_ids.iter())
-            .enumerate()
-        {
-            let offset = (token_id as usize) * d_model + (shard_id as usize) * d_head;
-            if offset + d_head > full_grad.len() {
-                continue;
-            }
-            let err_slice = &full_grad[offset..offset + d_head];
-            let p_in_slice = &self.k_cache[j * d_head..(j + 1) * d_head];
-
-            let mut p_in_normed = vec![0.0f32; d_head];
-            let sq_sum_ffn: f32 = p_in_slice.iter().map(|&x| x * x).sum();
-            let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
-            for d in 0..d_head {
-                p_in_normed[d] = p_in_slice[d] * inv_rms_ffn;
-            }
-
-            // 1. Recompute SwiGLU forward pass for exactly this cached state (Gradient Checkpointing)
-            let mut ffn_inter = vec![0.0f32; ffn_dim];
-            let mut gate_arr = vec![0.0f32; ffn_dim];
-            let mut up_arr = vec![0.0f32; ffn_dim];
-            let mut swish_arr = vec![0.0f32; ffn_dim];
-
-            for f in 0..ffn_dim {
-                let mut gate = 0.0f32;
-                let mut up = 0.0f32;
-                for d in 0..d_head {
-                    let m_val = p_in_normed[d];
-                    gate += m_val * primary.w_gate[d * ffn_dim + f];
-                    up += m_val * primary.w_up[d * ffn_dim + f];
-                }
-
-                let sig = 1.0 / (1.0 + (-gate).exp());
-                let swish = gate * sig;
-
-                gate_arr[f] = gate;
-                up_arr[f] = up;
-                swish_arr[f] = swish;
-                ffn_inter[f] = swish * up;
-            }
-
-            // 2. Exact backward pass
-            let mut d_inter = vec![0.0f32; ffn_dim];
-            for f in 0..ffn_dim {
-                let mut sum = 0.0f32;
-                for d in 0..d_head {
-                    sum += err_slice[d] * primary.w_down[f * d_head + d];
-                }
-                d_inter[f] = sum;
-            }
-
-            let mut d_gate_arr = vec![0.0f32; ffn_dim];
-            let mut d_up_arr = vec![0.0f32; ffn_dim];
-            for f in 0..ffn_dim {
-                let d_int = d_inter[f];
-                let d_swish = d_int * up_arr[f];
-                let d_up = d_int * swish_arr[f];
-
-                let gate = gate_arr[f];
-                let sig = 1.0 / (1.0 + (-gate).exp());
-                let d_sig_d_gate = sig * (1.0 - sig);
-                let d_swish_d_gate = sig + gate * d_sig_d_gate;
-
-                let d_gate = d_swish * d_swish_d_gate;
-
-                d_gate_arr[f] = d_gate;
-                d_up_arr[f] = d_up;
-            }
-
-            // 3. Weight updates
-            let alpha = primary.alpha;
-            let wd_factor = 1.0 - lr_diluted * weight_decay;
-
-            for f in 0..ffn_dim {
-                let inter_val = ffn_inter[f];
-                for d in 0..d_head {
-                    let idx = f * d_head + d;
-                    let grad = err_slice[d] * inter_val * alpha;
-                    primary.w_down[idx] = primary.w_down[idx] * wd_factor - lr_diluted * grad;
-                }
-            }
-
-            for d in 0..d_head {
-                let p_in_val = p_in_normed[d];
-                for f in 0..ffn_dim {
-                    let idx = d * ffn_dim + f;
-                    let grad_gate = d_gate_arr[f] * p_in_val * alpha;
-                    let grad_up = d_up_arr[f] * p_in_val * alpha;
-
-                    primary.w_gate[idx] = primary.w_gate[idx] * wd_factor - lr_diluted * grad_gate;
-                    primary.w_up[idx] = primary.w_up[idx] * wd_factor - lr_diluted * grad_up;
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -468,7 +462,6 @@ mod tests {
         assert_eq!(node.activation_count, 2);
         assert_eq!(node.cumulative_sequence_len, 2);
 
-        let full_err = vec![0.01f32; 128]; // dummy full grad
-        node.update_weights_from_broadcast_error(&full_err, 2, 64, 0.01);
+        // Removed broadcast error logic in test
     }
 }

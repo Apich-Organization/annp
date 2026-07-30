@@ -27,6 +27,7 @@ impl TokenScattering {
         &self,
         embeddings: &Tensor, // Shape [seq_len, d_model]
         config: &MicroBlockConfig,
+        offset: usize,
     ) -> Result<Vec<Particle>> {
         let (seq_len, d_model) = embeddings.dims2()?;
         assert_eq!(
@@ -45,7 +46,7 @@ impl TokenScattering {
                 let end_idx = start_idx + self.d_head;
                 let payload = flat_data[start_idx..end_idx].to_vec();
 
-                let header = ParticleHeader::new(t as u32, shard_i as u16, config.initial_energy);
+                let header = ParticleHeader::new((t + offset) as u32, shard_i as u16, config.initial_energy);
                 particles.push(Particle::new(header, payload));
             }
         }
@@ -72,7 +73,7 @@ mod tests {
         let tensor_data = vec![1.0f32; seq_len * d_model];
         let tensor = Tensor::from_vec(tensor_data, (seq_len, d_model), &Device::Cpu)?;
 
-        let particles = scattering.scatter_embeddings(&tensor, &config)?;
+        let particles = scattering.scatter_embeddings(&tensor, &config, 0)?;
 
         assert_eq!(particles.len(), seq_len * num_shards);
         for p in &particles {

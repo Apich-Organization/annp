@@ -72,11 +72,7 @@ impl Subnode {
             .iter()
             .map(|&w| w + rng.random_range(-epsilon..epsilon))
             .collect();
-        let w_down = parent
-            .w_down
-            .iter()
-            .map(|&w| w + rng.random_range(-epsilon..epsilon))
-            .collect();
+        let w_down = vec![0.0f32; parent.w_down.len()];
 
         let v_gate = vec![0.0f32; parent.w_gate.len()];
         let v_up = vec![0.0f32; parent.w_up.len()];

@@ -93,9 +93,7 @@ impl ANNPModel {
         }
     }
 
-    /// Forward pass through ANNP P2P Mesh with lock-free dtact coroutine mesh scheduling
-    pub fn forward(&mut self, embeddings: &Tensor) -> Result<Tensor> {
-        // Reset node KV Caches before each forward batch to prevent cross-batch historical state pollution
+    pub fn reset_state(&mut self) {
         for node in self.nodes.iter_mut() {
             node.k_cache.clear();
             node.v_cache.clear();
@@ -104,12 +102,18 @@ impl ANNPModel {
             node.kv_shard_ids.clear();
             node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
             node.recent_activation_count = 0;
+            node.local_loss_accumulator = 0.0;
+            node.local_loss_count = 0;
         }
+    }
+
+    /// Forward pass through ANNP P2P Mesh with lock-free dtact coroutine mesh scheduling
+    pub fn forward(&mut self, embeddings: &Tensor, offset: usize) -> Result<(Tensor, f32)> {
 
         let (seq_len, _) = embeddings.dims2()?;
         let mut initial_particles = self
             .scattering
-            .scatter_embeddings(embeddings, &self.config)?;
+            .scatter_embeddings(embeddings, &self.config, offset)?;
         for particle in &mut initial_particles {
             particle.trace_concentration = 1.0;
         }
@@ -279,14 +283,23 @@ impl ANNPModel {
         // We now rely on intra-node Pre-RMSNorm and exponential moving average attention
         // to maintain stability, allowing the network to express proportional amplitude.
 
-        Tensor::from_vec(full_data, (seq_len, d_model), &self.device)
+        let out_tensor = Tensor::from_vec(full_data, (seq_len, d_model), &self.device)?;
+
+        let mut total_loss = 0.0;
+        let mut total_count = 0;
+        for node in &self.nodes {
+            total_loss += node.local_loss_accumulator;
+            total_count += node.local_loss_count;
+        }
+        let avg_loss = if total_count > 0 { total_loss / total_count as f32 } else { 0.0 };
+
+        Ok((out_tensor, avg_loss))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use annp_core::NormStrategy;
 
     fn create_test_config() -> MicroBlockConfig {
         MicroBlockConfig {
@@ -298,7 +311,6 @@ mod tests {
             initial_energy: 1.0,
             max_hop: 10,
             min_hop: 2,
-            norm_strategy: NormStrategy::MicroRMSNorm,
             subnode_max: 8,
         }
     }
@@ -312,8 +324,9 @@ mod tests {
         let d_model = 4 * 64;
         let input_tensor = Tensor::from_vec(vec![0.1f32; 2 * d_model], (2, d_model), &device)?;
 
-        let output_tensor = model.forward(&input_tensor)?;
+        let (output_tensor, loss) = model.forward(&input_tensor, 0)?;
         assert_eq!(output_tensor.dims2()?, (2, d_model));
+        assert!(loss >= 0.0);
 
         Ok(())
     }
