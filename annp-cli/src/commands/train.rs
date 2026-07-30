@@ -62,6 +62,7 @@ pub fn execute_train(
         device.clone(),
         use_cuda,
     );
+    model.is_training = true;
 
     let mut start_epoch = 0;
 

@@ -371,21 +371,32 @@ impl ModelCheckpoint {
                 node.cumulative_sequence_len = node_ckpt.cumulative_sequence_len;
                 node.activation_count = node_ckpt.activation_count;
 
+                let use_cuda = node.use_cuda;
                 node.subnodes = node_ckpt
                     .subnodes
                     .iter()
-                    .map(|s| Subnode {
-                        subnode_id: s.subnode_id,
-                        w_gate: s.w_gate.clone(),
-                        w_up: s.w_up.clone(),
-                        w_down: s.w_down.clone(),
-                        v_gate: vec![0.0f32; s.w_gate.len()],
-                        v_up: vec![0.0f32; s.w_up.len()],
-                        v_down: vec![0.0f32; s.w_down.len()],
-                        alpha: s.alpha,
-                        activation_count: s.activation_count,
-                        credit_stats: OnlineStats::default(),
-                        d_weights: None,
+                    .map(|s| {
+                        let mut sub = Subnode {
+                            subnode_id: s.subnode_id,
+                            w_gate: s.w_gate.clone(),
+                            w_up: s.w_up.clone(),
+                            w_down: s.w_down.clone(),
+                            v_gate: vec![0.0f32; s.w_gate.len()],
+                            v_up: vec![0.0f32; s.w_up.len()],
+                            v_down: vec![0.0f32; s.w_down.len()],
+                            alpha: s.alpha,
+                            activation_count: s.activation_count,
+                            credit_stats: OnlineStats::default(),
+                            d_weights: None,
+                        };
+                        if use_cuda {
+                            sub.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
+                                &sub.w_gate,
+                                &sub.w_up,
+                                &sub.w_down,
+                            ));
+                        }
+                        sub
                     })
                     .collect();
             }
