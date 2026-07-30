@@ -2,7 +2,7 @@ use crate::checkpoint::ModelCheckpoint;
 use crate::config::AnnpTomlConfig;
 use crate::dataset::{DatasetFormat, DatasetStream};
 use annp_model::ANNPModel;
-use annp_trainer::{Stage0WaveTrainer, Stage1HardeningTrainer};
+use annp_trainer::trainer::Trainer;
 use candle_core::Device;
 use std::path::PathBuf;
 
@@ -36,7 +36,6 @@ pub fn select_device(device_str: &str) -> (Device, bool) {
 
 pub fn execute_train(
     config_path: PathBuf,
-    stage_target: String,
     resume_from: Option<PathBuf>,
     checkpoint_format: String,
     device_target: String,
@@ -87,12 +86,7 @@ pub fn execute_train(
         );
     }
 
-    // Streamlined 2-Stage Pipeline Selector
-    let stages_to_run: Vec<usize> = match stage_target.to_lowercase().as_str() {
-        "0" | "wave" | "exploration" => vec![0],
-        "1" | "hardening" | "continual" | "fine-tune" => vec![1],
-        _ => vec![0, 1],
-    };
+    let stages_to_run: Vec<usize> = vec![0];
 
     logger.log(
         "SYSTEM",
@@ -123,20 +117,10 @@ pub fn execute_train(
             continue;
         }
 
-        let (stage_name, stage_epochs, stage_lr, stage_cfg) = match stg {
-            0 => (
-                "Stage 0: Global Wave Exploration",
-                toml_config.stage0_wave.epochs,
-                toml_config.stage0_wave.learning_rate,
-                &toml_config.stage0_wave,
-            ),
-            _ => (
-                "Stage 1: Plasticity Hardening & Precision Fine-Tuning",
-                toml_config.stage1_hardening.epochs,
-                toml_config.stage1_hardening.learning_rate,
-                &toml_config.stage1_hardening,
-            ),
-        };
+        let stage_name = "Stage 0: Global Wave Exploration";
+        let stage_epochs = toml_config.stage0_wave.epochs;
+        let stage_lr = toml_config.stage0_wave.learning_rate;
+        let stage_cfg = &toml_config.stage0_wave;
 
         logger.log(
             "STAGE",
@@ -186,30 +170,8 @@ pub fn execute_train(
 
             for (batch_idx, res) in stream.enumerate() {
                 let tensor = res?;
-                let step_loss = match stg {
-                    0 => {
-                        let mut trainer = Stage0WaveTrainer::new(stage_lr);
-                        trainer.train_step_with_epoch(&mut model, &tensor, epoch)?
-                    }
-                    _ => {
-                        let trainer = Stage1HardeningTrainer::new(stage_lr, 0.001, 1.5);
-                        let h_stats = trainer.apply_plastic_hardening(&mut model);
-                        if (batch_idx + 1) % 10 == 0
-                            && (h_stats.links_pruned > 0 || !h_stats.spawn_details.is_empty())
-                        {
-                            logger.log_hardening(
-                                epoch + 1,
-                                h_stats.links_before,
-                                h_stats.links_pruned,
-                                h_stats.spawn_details.len(),
-                                &h_stats.spawn_details,
-                            );
-                        }
-
-                        let mut trainer0 = Stage0WaveTrainer::new(stage_lr);
-                        trainer0.train_step_with_epoch(&mut model, &tensor, epoch)?
-                    }
-                };
+                let mut trainer = Trainer::new(stage_lr);
+                let step_loss = trainer.train_step_with_epoch(&mut model, &tensor, epoch)?;
 
                 epoch_loss_sum += step_loss;
                 step_count += 1;

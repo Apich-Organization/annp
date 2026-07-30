@@ -18,8 +18,6 @@ pub struct MicroBlockConfig {
     pub max_hop: u16,
     /// Minimum hops required before spontaneous halting convergence checks begin
     pub min_hop: u16,
-    /// Micro-Norm option selection
-    pub norm_strategy: NormStrategy,
     /// Maximum number of internal subnodes per micro-block container (default: 8)
     pub subnode_max: usize,
 }
@@ -35,7 +33,6 @@ impl Default for MicroBlockConfig {
             initial_energy: 1.0,
             max_hop: 200,
             min_hop: 10,
-            norm_strategy: NormStrategy::MicroRMSNorm,
             subnode_max: 8,
         }
     }
@@ -49,14 +46,5 @@ impl MicroBlockConfig {
     pub fn d_model(&self) -> usize {
         self.num_shards * self.d_head
     }
-}
-
-/// Flexible Micro-Normalization Strategies defined in Section 2.2 of ANNP design.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NormStrategy {
-    /// Option A: Micro-RMSNorm + learnable alpha-scaling decay
-    MicroRMSNorm,
-    /// Option B: Sphere Normalization (projection onto d_head unit sphere)
-    SphereNormalization,
 }
 

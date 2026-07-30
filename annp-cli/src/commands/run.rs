@@ -2,7 +2,6 @@ use crate::checkpoint::ModelCheckpoint;
 use crate::config::AnnpTomlConfig;
 use crate::tokenizer::AnnpTokenizer;
 use annp_model::ANNPModel;
-use annp_trainer::Stage1HardeningTrainer;
 use candle_core::Tensor;
 use std::fs::File;
 use std::io::Write;
@@ -92,9 +91,8 @@ pub fn execute_run(
         last_output = model.forward(&input_tensor)?;
 
         if continual_mode {
-            // Apply Online Plasticity Hardening & Continual Adaptation
-            let trainer = Stage1HardeningTrainer::new(0.02, 0.001, 1.5);
-            trainer.apply_plastic_hardening(&mut model);
+            // Placeholder: Continual mode no longer uses Stage1HardeningTrainer
+            // as it was merged into the unified Trainer.
         }
     }
 

@@ -1,4 +1,4 @@
-use annp_core::{MicroBlockConfig, NormStrategy};
+use annp_core::MicroBlockConfig;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -88,12 +88,6 @@ impl AnnpTomlConfig {
     }
 
     pub fn to_core_config(&self) -> MicroBlockConfig {
-        let norm_strat = if self.model.norm_strategy.to_lowercase().contains("sphere") {
-            NormStrategy::SphereNormalization
-        } else {
-            NormStrategy::MicroRMSNorm
-        };
-
         MicroBlockConfig {
             num_shards: self.model.num_shards.unwrap_or(4),
             mesh_rows: self.model.mesh_rows,
@@ -103,7 +97,6 @@ impl AnnpTomlConfig {
             initial_energy: self.model.initial_energy,
             max_hop: self.model.max_hop,
             min_hop: self.model.min_hop,
-            norm_strategy: norm_strat,
             subnode_max: self.eviction.subnode_max.unwrap_or(8),
         }
     }

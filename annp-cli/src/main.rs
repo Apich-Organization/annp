@@ -30,9 +30,6 @@ enum Commands {
         /// Configuration TOML path
         #[arg(short, long, default_value = "annp_config.toml")]
         config: PathBuf,
-        /// Target training stage: "0" (exploration), "1" (hardening), or "all"
-        #[arg(short, long, default_value = "all")]
-        stage: String,
         /// Optional path to resume training from a checkpoint file (.annpb binary or .json)
         #[arg(short, long)]
         resume_from: Option<PathBuf>,
@@ -113,7 +110,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Init { output } => execute_init(output)?,
         Commands::Train {
             config,
-            stage,
             resume_from,
             format,
             device,
@@ -121,7 +117,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             log_dir,
         } => execute_train(
             config,
-            stage,
             resume_from,
             format,
             device,

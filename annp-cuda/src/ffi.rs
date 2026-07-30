@@ -44,9 +44,7 @@ unsafe extern "C" {
         d_head: i32,
         ffn_dim: i32,
         kv_len: i32,
-        norm_strategy: i32,
         alpha: f32,
-        sphere_radius: f32,
         stream: *mut c_void,
     );
 
@@ -94,9 +92,7 @@ impl CudaMicroBlockRunner {
         d_head: usize,
         ffn_dim: usize,
         kv_len: usize,
-        norm_strategy: usize,
         alpha: f32,
-        sphere_radius: f32,
     ) {
         Self::execute_fused_with_stream_device(
             p_in,
@@ -110,9 +106,7 @@ impl CudaMicroBlockRunner {
             d_head,
             ffn_dim,
             kv_len,
-            norm_strategy,
             alpha,
-            sphere_radius,
             None,
             true,
         );
@@ -130,9 +124,7 @@ impl CudaMicroBlockRunner {
         d_head: usize,
         ffn_dim: usize,
         kv_len: usize,
-        norm_strategy: usize,
         alpha: f32,
-        sphere_radius: f32,
         stream: Option<&CudaStreamManager>,
     ) {
         Self::execute_fused_with_stream_device(
@@ -147,9 +139,7 @@ impl CudaMicroBlockRunner {
             d_head,
             ffn_dim,
             kv_len,
-            norm_strategy,
             alpha,
-            sphere_radius,
             stream,
             true,
         );
@@ -168,9 +158,7 @@ impl CudaMicroBlockRunner {
         d_head: usize,
         ffn_dim: usize,
         kv_len: usize,
-        norm_strategy: usize,
         alpha: f32,
-        sphere_radius: f32,
         stream: Option<&CudaStreamManager>,
         use_cuda: bool,
     ) {
@@ -245,9 +233,7 @@ impl CudaMicroBlockRunner {
                     d_head as i32,
                     ffn_dim as i32,
                     kv_len as i32,
-                    norm_strategy as i32,
                     alpha,
-                    sphere_radius,
                     stream_ptr,
                 );
                 return;
@@ -280,9 +266,7 @@ impl CudaMicroBlockRunner {
                     d_head,
                     ffn_dim,
                     kv_len,
-                    norm_strategy,
                     alpha,
-                    sphere_radius,
                 );
             }
         } else {
@@ -298,9 +282,7 @@ impl CudaMicroBlockRunner {
                 d_head,
                 ffn_dim,
                 kv_len,
-                norm_strategy,
                 alpha,
-                sphere_radius,
             );
         }
     }
@@ -319,9 +301,7 @@ impl CudaMicroBlockRunner {
         d_head: usize,
         ffn_dim: usize,
         kv_len: usize,
-        norm_strategy: usize,
         alpha: f32,
-        sphere_radius: f32,
     ) {
         unsafe {
             use std::arch::x86_64::*;
@@ -420,7 +400,7 @@ impl CudaMicroBlockRunner {
                     }
                 }
 
-                // 2. Norm 1 (Disabled to allow proportional response/silence)
+                // 2. Additive Residual 1
                 let alpha_vec = _mm256_set1_ps(alpha);
                 for d in (0..d_head).step_by(8) {
                     let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
@@ -495,7 +475,7 @@ impl CudaMicroBlockRunner {
                 }
 
 
-                // 5. Norm 2 & Output (Disabled to allow proportional response/silence)
+                // 5. Additive Residual 2 & Output Clipping
                 let min_v = _mm256_set1_ps(-100.0);
                 let max_v = _mm256_set1_ps(100.0);
                 let alpha_v = _mm256_set1_ps(alpha);
@@ -526,9 +506,7 @@ impl CudaMicroBlockRunner {
         d_head: usize,
         ffn_dim: usize,
         kv_len: usize,
-        norm_strategy: usize,
         alpha: f32,
-        sphere_radius: f32,
     ) {
         let scale = 1.0 / (d_head as f32).sqrt();
 
@@ -585,7 +563,7 @@ impl CudaMicroBlockRunner {
                 }
             }
 
-            // 2. Norm 1 (Disabled to allow proportional response/silence)
+            // 2. Additive Residual 1
             let mut s_mid = vec![0.0f32; d_head];
             for d in 0..d_head {
                 s_mid[d] = curr_p[d] + alpha * attn_out[d];
@@ -623,7 +601,7 @@ impl CudaMicroBlockRunner {
             }
 
 
-            // 5. Norm 2 (Disabled to allow proportional response/silence)
+            // 5. Additive Residual 2 & Output Clipping
             for d in 0..d_head {
                 let res = s_mid[d] + alpha * down_arr[d];
                 out_slice[d] = res.clamp(-100.0, 100.0);

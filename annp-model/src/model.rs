@@ -275,13 +275,9 @@ impl ANNPModel {
             }
         }
         
-        // Micro-RMS bounding to prevent network explosion dynamically
-        for row in full_data.chunks_exact_mut(d_model) {
-            let rms = (row.iter().map(|x| x * x).sum::<f32>() / d_model as f32 + 1e-8).sqrt();
-            for value in row {
-                *value /= rms;
-            }
-        }
+        // Global Micro-RMS bounding was removed. 
+        // We now rely on intra-node Pre-RMSNorm and exponential moving average attention
+        // to maintain stability, allowing the network to express proportional amplitude.
 
         Tensor::from_vec(full_data, (seq_len, d_model), &self.device)
     }

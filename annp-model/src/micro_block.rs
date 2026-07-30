@@ -1,5 +1,5 @@
 use crate::subnode::Subnode;
-use annp_core::{MicroBlockConfig, NormStrategy, Particle};
+use annp_core::{MicroBlockConfig, Particle};
 use annp_cuda::CudaMicroBlockRunner;
 
 /// Autonomous Micro-Block Node (Container holding 1 to subnode_max Subnodes).
@@ -231,10 +231,6 @@ impl MicroBlockNode {
         let d_head = self.config.d_head;
         let ffn_dim = d_head * self.config.ffn_expansion;
         let kv_len = self.k_cache.len() / d_head;
-        let norm_strat_val = match self.config.norm_strategy {
-            NormStrategy::MicroRMSNorm => 0,
-            NormStrategy::SphereNormalization => 1,
-        };
 
         // Flatten p_in payloads and cache last_p_in into reusable p_in_buf
         // SUPERPOSITION: Combine all particles in the batch into a single membrane potential vector
@@ -279,9 +275,7 @@ impl MicroBlockNode {
             d_head,
             ffn_dim,
             kv_len,
-            norm_strat_val,
             alpha,
-            1.0, // config.sphere_radius removed
             None,
             self.use_cuda,
         );

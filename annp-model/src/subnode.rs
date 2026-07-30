@@ -28,8 +28,10 @@ impl Subnode {
         let w_up = (0..d_head * ffn_dim)
             .map(|_| rng.random_range(-scale..scale))
             .collect();
+        
+        let w_down_scale = scale * 0.05; // 5% of normal scale to prevent residual explosion across max_hops
         let w_down = (0..ffn_dim * d_head)
-            .map(|_| rng.random_range(-scale..scale))
+            .map(|_| rng.random_range(-w_down_scale..w_down_scale))
             .collect();
 
         let v_gate = vec![0.0f32; d_head * ffn_dim];

@@ -1,13 +1,13 @@
 use annp_model::ANNPModel;
 use candle_core::{Result, Tensor};
 
-/// Stage 0: Embryonic Stage - Global Wave Pre-training.
+/// Unified Stage: Global Wave Pre-training & Plasticity Hardening.
 /// Shard-specific exact residual backpropagation with learning rate decay.
-pub struct Stage0WaveTrainer {
+pub struct Trainer {
     pub base_lr: f32,
 }
 
-impl Stage0WaveTrainer {
+impl Trainer {
     pub fn new(base_lr: f32) -> Self {
         Self { base_lr }
     }
@@ -46,6 +46,8 @@ impl Stage0WaveTrainer {
         let mse_loss = (diff.sqr()?.sum_all()?.to_scalar::<f32>()?) / (targets.elem_count() as f32);
 
         let diff_vec = diff.flatten_all()?.to_vec1::<f32>()?;
+        if epoch_idx == 0 {
+        }
 
         // `forward` returns RMS-bounded egress vectors. We apply the gradient directly 
         // to the shard errors since the output nodes now emit directly without projection.
@@ -64,7 +66,7 @@ impl Stage0WaveTrainer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use annp_core::{MicroBlockConfig, NormStrategy};
+    use annp_core::MicroBlockConfig;
     use candle_core::Device;
 
     fn create_test_config() -> MicroBlockConfig {
@@ -77,7 +79,6 @@ mod tests {
             initial_energy: 1.0,
             max_hop: 20,
             min_hop: 2,
-            norm_strategy: NormStrategy::MicroRMSNorm,
             subnode_max: 8,
         }
     }
@@ -92,7 +93,7 @@ mod tests {
         let tensor_data = vec![0.5f32; 2 * d_model];
         let input_embeddings = Tensor::from_vec(tensor_data, (2, d_model), &device)?;
 
-        let mut trainer = Stage0WaveTrainer::new(2.0);
+        let mut trainer = Trainer::new(2.0);
         let loss = trainer.train_step_with_epoch(&mut model, &input_embeddings, 0)?;
         println!("DEBUG_TEST_LOSS = {}", loss);
 

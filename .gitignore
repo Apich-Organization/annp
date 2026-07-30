@@ -5,3 +5,4 @@ patch.patch
 test_debug.rs
 tmp/annp_chunks/
 scratch.py
+test_forward.rs
