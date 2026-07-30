@@ -382,11 +382,12 @@ impl MicroBlockNode {
                     }
 
                     let alpha = subnode.alpha;
+                    let max_grad = 0.05f32;
                     for f in 0..ffn_dim {
                         let inter_val = ffn_inter[f];
                         for d in 0..d_head {
                             let idx = f * d_head + d;
-                            let grad = local_err[d] * inter_val * alpha;
+                            let grad = (local_err[d] * inter_val * alpha).clamp(-max_grad, max_grad);
                             subnode.w_down[idx] = subnode.w_down[idx] * wd_factor - lr * grad;
                         }
                     }
@@ -395,8 +396,8 @@ impl MicroBlockNode {
                         let m_val = s_mid_normed[d];
                         for f in 0..ffn_dim {
                             let idx = d * ffn_dim + f;
-                            let grad_gate = d_gate_arr[f] * m_val * alpha;
-                            let grad_up = d_up_arr[f] * m_val * alpha;
+                            let grad_gate = (d_gate_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+                            let grad_up = (d_up_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
 
                             subnode.w_gate[idx] = subnode.w_gate[idx] * wd_factor - lr * grad_gate;
                             subnode.w_up[idx] = subnode.w_up[idx] * wd_factor - lr * grad_up;
