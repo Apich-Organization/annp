@@ -390,6 +390,10 @@ __global__ void fused_micro_block_backward_kernel(
     float max_grad = 0.05f;
     float wd_factor = 1.0f - lr * weight_decay;
 
+    int max_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
+    int max_warps_pad = (max_warps + 3) & ~3;
+
+
     // Use dynamic shared memory for all intermediate arrays
     extern __shared__ float s_mem_bw[];
     float* s_p_in_normed = s_mem_bw;
@@ -438,8 +442,8 @@ __global__ void fused_micro_block_backward_kernel(
                 float score = dot * scale;
                 if (score > best_sim) best_sim = score;
                 // Temporarily store score in s_attn's first elements to save registers
-                // Wait, s_attn needs to be used for output. We can store scores in s_reduce past index 1.
-                s_reduce[1 + i] = score; 
+                // Wait, s_attn needs to be used for output. We can store scores in s_reduce past index max_warps_pad.
+                s_reduce[max_warps_pad + i] = score; 
             }
             __syncthreads();
         }
@@ -454,8 +458,8 @@ __global__ void fused_micro_block_backward_kernel(
             float sum_exp = 0.0f;
             if (tid == 0) {
                 for (int i = 0; i < kv_len; i++) {
-                    float e = expf(s_reduce[1 + i] - best_sim);
-                    s_reduce[1 + i] = e;
+                    float e = expf(s_reduce[max_warps_pad + i] - best_sim);
+                    s_reduce[max_warps_pad + i] = e;
                     sum_exp += e;
                 }
                 s_reduce[0] = 1.0f / (sum_exp + 1e-8f);
@@ -464,7 +468,7 @@ __global__ void fused_micro_block_backward_kernel(
 
             float inv_sum = s_reduce[0];
             for (int i = 0; i < kv_len; i++) {
-                float w = s_reduce[1 + i] * inv_sum;
+                float w = s_reduce[max_warps_pad + i] * inv_sum;
                 const float* v_slice = v_cache + i * d_head;
                 for (int d = tid; d < d_head; d += blockDim.x) {
                     s_attn[d] += w * v_slice[d];
