@@ -30,7 +30,10 @@ pub fn execute_run(
     let core_config = toml_config.to_core_config();
 
     if let Some(tau) = temperature_override {
-        println!("Overriding Routing Temperature: tau = {:.3} (ignored, parameter removed)", tau);
+        println!(
+            "Overriding Routing Temperature: tau = {:.3} (ignored, parameter removed)",
+            tau
+        );
     }
 
     let (device, use_cuda) = select_device(&device_target);

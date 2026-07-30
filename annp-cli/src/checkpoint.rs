@@ -390,7 +390,6 @@ impl ModelCheckpoint {
             }
         }
 
-
         if !self.routing_tables.is_empty() {
             model.topology.routing_tables = self.routing_tables.clone();
             model.topology.num_nodes = model.nodes.len();

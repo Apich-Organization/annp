@@ -115,14 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             device,
             output_dir,
             log_dir,
-        } => execute_train(
-            config,
-            resume_from,
-            format,
-            device,
-            output_dir,
-            log_dir,
-        )?,
+        } => execute_train(config, resume_from, format, device, output_dir, log_dir)?,
         Commands::Run {
             config,
             checkpoint,
@@ -149,12 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             max_hop,
             min_hop,
-        } => execute_edit_model(
-            checkpoint,
-            config,
-            max_hop,
-            min_hop,
-        )?,
+        } => execute_edit_model(checkpoint, config, max_hop, min_hop)?,
         Commands::Export { checkpoint, out } => execute_export(checkpoint, out)?,
     }
 

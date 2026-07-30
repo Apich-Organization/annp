@@ -95,20 +95,8 @@ impl CudaMicroBlockRunner {
         alpha: f32,
     ) {
         Self::execute_fused_with_stream_device(
-            p_in,
-            k_cache,
-            v_cache,
-            w_gate,
-            w_up,
-            w_down,
-            p_out,
-            batch_size,
-            d_head,
-            ffn_dim,
-            kv_len,
-            alpha,
-            None,
-            true,
+            p_in, k_cache, v_cache, w_gate, w_up, w_down, p_out, batch_size, d_head, ffn_dim,
+            kv_len, alpha, None, true,
         );
     }
 
@@ -128,20 +116,8 @@ impl CudaMicroBlockRunner {
         stream: Option<&CudaStreamManager>,
     ) {
         Self::execute_fused_with_stream_device(
-            p_in,
-            k_cache,
-            v_cache,
-            w_gate,
-            w_up,
-            w_down,
-            p_out,
-            batch_size,
-            d_head,
-            ffn_dim,
-            kv_len,
-            alpha,
-            stream,
-            true,
+            p_in, k_cache, v_cache, w_gate, w_up, w_down, p_out, batch_size, d_head, ffn_dim,
+            kv_len, alpha, stream, true,
         );
     }
 
@@ -255,34 +231,14 @@ impl CudaMicroBlockRunner {
             #[cfg(target_arch = "x86_64")]
             unsafe {
                 Self::execute_fused_avx2(
-                    p_in,
-                    k_cache,
-                    v_cache,
-                    w_gate,
-                    w_up,
-                    w_down,
-                    p_out,
-                    batch_size,
-                    d_head,
-                    ffn_dim,
-                    kv_len,
-                    alpha,
+                    p_in, k_cache, v_cache, w_gate, w_up, w_down, p_out, batch_size, d_head,
+                    ffn_dim, kv_len, alpha,
                 );
             }
         } else {
             Self::execute_fused_fallback(
-                p_in,
-                k_cache,
-                v_cache,
-                w_gate,
-                w_up,
-                w_down,
-                p_out,
-                batch_size,
-                d_head,
-                ffn_dim,
-                kv_len,
-                alpha,
+                p_in, k_cache, v_cache, w_gate, w_up, w_down, p_out, batch_size, d_head, ffn_dim,
+                kv_len, alpha,
             );
         }
     }
@@ -474,7 +430,6 @@ impl CudaMicroBlockRunner {
                     }
                 }
 
-
                 // 5. Additive Residual 2 & Output Clipping
                 let min_v = _mm256_set1_ps(-100.0);
                 let max_v = _mm256_set1_ps(100.0);
@@ -599,7 +554,6 @@ impl CudaMicroBlockRunner {
                     down_arr[d] += inter_val * w_down[j * d_head + d];
                 }
             }
-
 
             // 5. Additive Residual 2 & Output Clipping
             for d in 0..d_head {

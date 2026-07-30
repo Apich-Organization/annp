@@ -47,4 +47,3 @@ impl MicroBlockConfig {
         self.num_shards * self.d_head
     }
 }
-

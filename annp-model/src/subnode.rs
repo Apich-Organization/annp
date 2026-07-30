@@ -28,7 +28,7 @@ impl Subnode {
         let w_up = (0..d_head * ffn_dim)
             .map(|_| rng.random_range(-scale..scale))
             .collect();
-        
+
         let w_down_scale = scale * 0.05; // 5% of normal scale to prevent residual explosion across max_hops
         let w_down = (0..ffn_dim * d_head)
             .map(|_| rng.random_range(-w_down_scale..w_down_scale))
@@ -53,7 +53,12 @@ impl Subnode {
     }
 
     /// Spawns a new subnode by inheriting parent subnode weights with a small orthogonal/mathematical perturbation
-    pub fn spawn_from_parent(subnode_id: usize, parent: &Subnode, d_head: usize, ffn_dim: usize) -> Self {
+    pub fn spawn_from_parent(
+        subnode_id: usize,
+        parent: &Subnode,
+        d_head: usize,
+        ffn_dim: usize,
+    ) -> Self {
         let mut rng = rand::rng();
         let epsilon = (1.0 / (d_head as f32 * ffn_dim as f32).sqrt()) * 0.01;
 

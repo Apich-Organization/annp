@@ -43,7 +43,7 @@ impl ParticleHeader {
 pub struct Particle {
     pub header: ParticleHeader,
     pub payload: Vec<f32>,
-    /// Continuous temporal trace mimicking chemical concentration gradients, 
+    /// Continuous temporal trace mimicking chemical concentration gradients,
     /// replacing discrete synchronous wave_ids. Used for STDP-like binding.
     #[serde(default)]
     pub trace_concentration: f32,

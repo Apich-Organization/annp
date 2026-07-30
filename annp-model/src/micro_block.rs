@@ -121,10 +121,10 @@ impl MicroBlockNode {
                 .unwrap_or_else(|| self.subnodes[0].clone());
             let new_subnode_id = self.subnodes.len();
             let new_subnode = Subnode::spawn_from_parent(
-                new_subnode_id, 
-                &parent_subnode, 
-                self.config.d_head, 
-                self.config.d_head * self.config.ffn_expansion
+                new_subnode_id,
+                &parent_subnode,
+                self.config.d_head,
+                self.config.d_head * self.config.ffn_expansion,
             );
 
             self.subnodes.push(new_subnode);
@@ -202,9 +202,10 @@ impl MicroBlockNode {
             let key_norm = key.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
             let similarity = payload.iter().zip(key).map(|(a, b)| a * b).sum::<f32>()
                 / (payload_norm * key_norm);
-            
+
             // Continuous trace proximity for causality binding (STDP-like)
-            let trace_diff = (self.kv_traces.get(index).unwrap_or(&0.0) - particle.trace_concentration).abs();
+            let trace_diff =
+                (self.kv_traces.get(index).unwrap_or(&0.0) - particle.trace_concentration).abs();
             let temporal_affinity = (1.0 - trace_diff).max(0.0);
 
             if temporal_affinity > 0.8
@@ -212,7 +213,8 @@ impl MicroBlockNode {
                 && self.kv_shard_ids.get(index) == Some(&particle.header.shard_id)
             {
                 let effective_sim = similarity * temporal_affinity;
-                best_positive = Some(best_positive.map_or(effective_sim, |best| best.max(effective_sim)));
+                best_positive =
+                    Some(best_positive.map_or(effective_sim, |best| best.max(effective_sim)));
             } else {
                 negative_sum += similarity;
                 negative_count += 1;
@@ -348,7 +350,12 @@ impl MicroBlockNode {
         let lr_diluted = lr / (self.config.max_hop as f32);
         let weight_decay = 1e-4f32;
 
-        for (j, (&token_id, &shard_id)) in self.kv_token_ids.iter().zip(self.kv_shard_ids.iter()).enumerate() {
+        for (j, (&token_id, &shard_id)) in self
+            .kv_token_ids
+            .iter()
+            .zip(self.kv_shard_ids.iter())
+            .enumerate()
+        {
             let offset = (token_id as usize) * d_model + (shard_id as usize) * d_head;
             if offset + d_head > full_grad.len() {
                 continue;
@@ -368,7 +375,7 @@ impl MicroBlockNode {
             let mut gate_arr = vec![0.0f32; ffn_dim];
             let mut up_arr = vec![0.0f32; ffn_dim];
             let mut swish_arr = vec![0.0f32; ffn_dim];
-            
+
             for f in 0..ffn_dim {
                 let mut gate = 0.0f32;
                 let mut up = 0.0f32;
@@ -378,10 +385,9 @@ impl MicroBlockNode {
                     up += m_val * primary.w_up[d * ffn_dim + f];
                 }
 
-                
                 let sig = 1.0 / (1.0 + (-gate).exp());
                 let swish = gate * sig;
-                
+
                 gate_arr[f] = gate;
                 up_arr[f] = up;
                 swish_arr[f] = swish;
@@ -404,14 +410,14 @@ impl MicroBlockNode {
                 let d_int = d_inter[f];
                 let d_swish = d_int * up_arr[f];
                 let d_up = d_int * swish_arr[f];
-                
+
                 let gate = gate_arr[f];
                 let sig = 1.0 / (1.0 + (-gate).exp());
                 let d_sig_d_gate = sig * (1.0 - sig);
                 let d_swish_d_gate = sig + gate * d_sig_d_gate;
-                
+
                 let d_gate = d_swish * d_swish_d_gate;
-                
+
                 d_gate_arr[f] = d_gate;
                 d_up_arr[f] = d_up;
             }
@@ -419,7 +425,7 @@ impl MicroBlockNode {
             // 3. Weight updates
             let alpha = primary.alpha;
             let wd_factor = 1.0 - lr_diluted * weight_decay;
-            
+
             for f in 0..ffn_dim {
                 let inter_val = ffn_inter[f];
                 for d in 0..d_head {
@@ -435,7 +441,7 @@ impl MicroBlockNode {
                     let idx = d * ffn_dim + f;
                     let grad_gate = d_gate_arr[f] * p_in_val * alpha;
                     let grad_up = d_up_arr[f] * p_in_val * alpha;
-                    
+
                     primary.w_gate[idx] = primary.w_gate[idx] * wd_factor - lr_diluted * grad_gate;
                     primary.w_up[idx] = primary.w_up[idx] * wd_factor - lr_diluted * grad_up;
                 }

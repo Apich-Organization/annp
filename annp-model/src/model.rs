@@ -224,8 +224,8 @@ impl ANNPModel {
                     if p.header.halted {
                         halted_particles.push(p);
                     } else {
-                        let mut next_hop = self.topology.routing_tables[node_id]
-                            .select_next_hop(&p);
+                        let mut next_hop =
+                            self.topology.routing_tables[node_id].select_next_hop(&p);
 
                         // P2P Decentralized Backpressure: if candidate target queue is full, overflow to neighbor in local P2P mesh
                         if self.next_queues[next_hop].len() > 64 {
@@ -254,7 +254,7 @@ impl ANNPModel {
             }
         }
 
-        // Fully Decentralized Reconstruction: 
+        // Fully Decentralized Reconstruction:
         // Emulate motor nodes emitting their state without a centralized dense projector.
         let d_model = self.config.d_head * self.config.num_shards;
         let mut full_data = vec![0.0f32; seq_len * d_model];
@@ -274,8 +274,8 @@ impl ANNPModel {
                 }
             }
         }
-        
-        // Global Micro-RMS bounding was removed. 
+
+        // Global Micro-RMS bounding was removed.
         // We now rely on intra-node Pre-RMSNorm and exponential moving average attention
         // to maintain stability, allowing the network to express proportional amplitude.
 

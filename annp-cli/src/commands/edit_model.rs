@@ -47,7 +47,6 @@ pub fn execute_edit_model(
         ckpt.config.min_hop = val;
     }
 
-
     // 5. Save updated checkpoint
     ckpt.save(&checkpoint_path)?;
     println!(

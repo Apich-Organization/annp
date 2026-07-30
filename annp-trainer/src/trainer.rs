@@ -46,10 +46,9 @@ impl Trainer {
         let mse_loss = (diff.sqr()?.sum_all()?.to_scalar::<f32>()?) / (targets.elem_count() as f32);
 
         let diff_vec = diff.flatten_all()?.to_vec1::<f32>()?;
-        if epoch_idx == 0 {
-        }
+        if epoch_idx == 0 {}
 
-        // `forward` returns RMS-bounded egress vectors. We apply the gradient directly 
+        // `forward` returns RMS-bounded egress vectors. We apply the gradient directly
         // to the shard errors since the output nodes now emit directly without projection.
         let input_grad = diff_vec;
 
