@@ -80,44 +80,115 @@ pub fn execute_run(
         "Static Production Mode (Deterministic Frozen Weights)"
     };
 
+    let is_random_mode = input_text.is_none();
     println!(
         "\n=== Executing ANNP Model Inference Pass ({}) ===",
         run_mode_str
     );
+    if is_random_mode {
+        println!("Mode: Random Initial Tokens");
+    } else {
+        println!("Mode: Prompt Auto-Regressive Generation");
+    }
+
     println!("Input Tensor Shape: {:?}", input_tensor.shape());
 
-    let iterations = if benchmark { 50 } else { 1 };
+    let generate_len = if benchmark { 5 } else { 20 };
     let start_time = Instant::now();
-    let mut last_output = Tensor::zeros((seq_len, d_model), candle_core::DType::F32, &device)?;
+    let mut current_sequence = input_tensor.clone();
+    let mut total_particles_processed = 0;
 
-    for _ in 0..iterations {
-        let (out, _) = model.forward(&input_tensor, 0)?;
-        last_output = out;
+    // Store decoded text
+    let mut generated_ids = Vec::new();
+    let mut current_len = seq_len;
+
+    for step in 0..generate_len {
+        let (out, _) = model.forward(&current_sequence, 0)?;
+        total_particles_processed += current_len * num_shards;
 
         if continual_mode {
-            // Placeholder: Continual mode no longer uses Stage1HardeningTrainer
-            // as it was merged into the unified Trainer.
+            // Continual adaptation hook
         }
+
+        // Extract the prediction for the next token (the output of the last sequence element)
+        let flat_out = out.flatten_all()?.to_vec1::<f32>()?;
+        let last_out = &flat_out[(current_len - 1) * d_model..current_len * d_model];
+
+        // Decode via Nearest Neighbor Search over vocab (1..32000)
+        let mut best_id = 1u32;
+        let mut best_score = -f32::INFINITY;
+
+        let target_pos = current_len;
+
+        for token_id in 1..32000u32 {
+            // Reconstruct the expected activation tensor vector for this token_id at target_pos
+            let mut expected_vec = Vec::with_capacity(d_model);
+            let mut seed = (token_id as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add(1);
+
+            for d in 0..d_model {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
+                let pos_enc = (target_pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
+                expected_vec.push(rand_f32 + pos_enc);
+            }
+            let rms = (expected_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
+                .sqrt()
+                .max(1e-6);
+
+            // Compute cosine similarity
+            let mut dot = 0.0;
+            for d in 0..d_model {
+                dot += last_out[d] * (expected_vec[d] / rms);
+            }
+            if dot > best_score {
+                best_score = dot;
+                best_id = token_id;
+            }
+        }
+
+        generated_ids.push(best_id);
+
+        // Append the new token to the sequence
+        let new_token_text = tokenizer.decode(&[best_id]);
+        print!("{} ", new_token_text);
+        std::io::stdout().flush().unwrap();
+
+        // Re-encode the newly generated token and append to current_sequence
+        // Since encode_to_tensor expects a full string and we want it to be at target_pos,
+        // we can just use our reconstructed logic to build the tensor directly
+        let mut next_vec = Vec::with_capacity(d_model);
+        let mut seed = (best_id as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(1);
+        for d in 0..d_model {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
+            let pos_enc = (target_pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
+            next_vec.push(rand_f32 + pos_enc);
+        }
+        let rms = (next_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
+            .sqrt()
+            .max(1e-6);
+        for v in next_vec.iter_mut() {
+            *v /= rms;
+        }
+
+        let next_tensor = Tensor::from_vec(next_vec, (1, d_model), &device)?;
+        current_sequence = Tensor::cat(&[&current_sequence, &next_tensor], 0)?;
+        current_len += 1;
     }
 
-    let elapsed = start_time.elapsed();
-    let total_particles_processed = seq_len * num_shards * iterations;
-    let particles_per_sec = total_particles_processed as f64 / elapsed.as_secs_f64();
-
-    println!("Output Sequence Tensor Shape: {:?}", last_output.shape());
-
-    if input_text.is_some() {
-        let output_vec = last_output.flatten_all()?.to_vec1::<f32>()?;
-        let mut decoded_ids = Vec::with_capacity(seq_len);
-        for t in 0..seq_len {
-            let row_slice = &output_vec[t * d_model..(t + 1) * d_model];
-            let mean_val: f32 = row_slice.iter().sum::<f32>() / d_model as f32;
-            let token_id = (mean_val.abs() * 1000.0) as u32;
-            decoded_ids.push(token_id);
-        }
-        let decoded_text = tokenizer.decode(&decoded_ids);
-        println!("Decoded ANNP Output Sequence Text: \"{}\"", decoded_text);
-    }
+    println!(
+        "\n\nFinal Full Generated Sequence: \"{} {}\"",
+        input_text.unwrap_or_else(|| "<random_init>".to_string()),
+        tokenizer.decode(&generated_ids)
+    );
 
     if continual_mode {
         println!(
@@ -129,7 +200,7 @@ pub fn execute_run(
     // Save binary output tensor if requested (.annpb)
     if let Some(save_path) = save_output {
         println!("Saving output tensor to binary file: {:?}", save_path);
-        let flat_output = last_output.flatten_all()?.to_vec1::<f32>()?;
+        let flat_output = current_sequence.flatten_all()?.to_vec1::<f32>()?;
         let mut file = File::create(&save_path)?;
         file.write_all(b"ANNPB_OUT")?;
         file.write_all(&(seq_len as u32).to_le_bytes())?;
@@ -147,9 +218,12 @@ pub fn execute_run(
     }
 
     if benchmark {
+        let elapsed = start_time.elapsed();
+        let particles_per_sec = total_particles_processed as f64 / elapsed.as_secs_f64();
+
         println!("\n=== ANNP High-Throughput Performance Benchmark ===");
         println!("Mode: {}", run_mode_str);
-        println!("Iterations Executed: {}", iterations);
+        println!("Iterations Executed: {}", generate_len);
         println!(
             "Total Processing Time: {:.4} seconds",
             elapsed.as_secs_f64()
@@ -161,7 +235,7 @@ pub fn execute_run(
         );
         println!(
             "Average Latency per Pass: {:.4} ms",
-            (elapsed.as_secs_f64() * 1000.0) / iterations as f64
+            (elapsed.as_secs_f64() * 1000.0) / generate_len as f64
         );
         println!(
             "Memory Overhead per Node: ~{:.2} KB",

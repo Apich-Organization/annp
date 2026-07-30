@@ -46,6 +46,7 @@ pub enum DatasetFormat {
     Csv,
     Sqlite,
     SyntheticPattern,
+    RandomTokens,
 }
 
 impl DatasetFormat {
@@ -55,6 +56,7 @@ impl DatasetFormat {
             "csv" => Self::Csv,
             "sqlite" | "db" => Self::Sqlite,
             "pattern" | "synthetic" | "harmonic" => Self::SyntheticPattern,
+            "random" | "randomtokens" => Self::RandomTokens,
             _ => Self::Json,
         }
     }
@@ -185,6 +187,7 @@ pub fn load_dataset<P: AsRef<Path>>(
 ) -> Result<Vec<Tensor>> {
     match format {
         DatasetFormat::SyntheticPattern => generate_synthetic_pattern_tensors(d_model, device),
+        DatasetFormat::RandomTokens => generate_random_tokens_tensors(d_model, device),
         _ => {
             let p = path.as_ref();
             if !p.exists() {
@@ -207,9 +210,44 @@ pub fn load_dataset<P: AsRef<Path>>(
                 DatasetFormat::SyntheticPattern => {
                     generate_synthetic_pattern_tensors(d_model, device)
                 }
+                DatasetFormat::RandomTokens => generate_random_tokens_tensors(d_model, device),
             }
         }
     }
+}
+
+pub fn generate_random_tokens_tensors(d_model: usize, device: &Device) -> Result<Vec<Tensor>> {
+    use crate::tokenizer::AnnpTokenizer;
+    let tokenizer = AnnpTokenizer::load_from_file("tokenizer.model");
+
+    let seq_len = 64;
+    let num_batches = 128;
+    let mut tensors = Vec::with_capacity(num_batches);
+    let mut rng = rand::rng();
+
+    for _ in 0..num_batches {
+        // Generate random sequence of token IDs
+        let mut text_parts = Vec::new();
+        for _ in 0..seq_len {
+            let token_id: u32 = rng.random_range(1..32000);
+            let s = tokenizer.decode(&[token_id]);
+            // Filter out empty or whitespace to ensure they count as valid tokens
+            if !s.trim().is_empty() {
+                text_parts.push(s);
+            } else {
+                text_parts.push(format!("t{}", token_id));
+            }
+        }
+        let text = text_parts.join(" ");
+        let tensor = tokenizer.encode_to_tensor(&text, d_model, device)?;
+        // If the tokenizer output seq_len doesn't match perfectly, that's fine, we take the subset or let it be
+        tensors.push(tensor);
+    }
+    println!(
+        "Generated {} batches of Random Token data for baseline testing.",
+        num_batches
+    );
+    Ok(tensors)
 }
 
 pub fn generate_synthetic_pattern_tensors(d_model: usize, device: &Device) -> Result<Vec<Tensor>> {
