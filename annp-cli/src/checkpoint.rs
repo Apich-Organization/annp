@@ -385,6 +385,7 @@ impl ModelCheckpoint {
                         alpha: s.alpha,
                         activation_count: s.activation_count,
                         credit_stats: OnlineStats::default(),
+                        d_weights: None,
                     })
                     .collect();
             }

@@ -54,7 +54,7 @@ impl MicroBlockNode {
         let v_cache = Vec::with_capacity(max_kv_len * d_head);
         let last_p_in = vec![0.0f32; d_head];
 
-        Self {
+        let mut node = Self {
             node_id,
             config,
             subnodes,
@@ -77,6 +77,22 @@ impl MicroBlockNode {
             p_out_buf: Vec::with_capacity(64 * d_head),
             use_cuda,
             active_subnode: 0,
+        };
+        node.sync_cuda_weights();
+        node
+    }
+
+    pub fn sync_cuda_weights(&mut self) {
+        if self.use_cuda {
+            for subnode in self.subnodes.iter_mut() {
+                if subnode.d_weights.is_none() {
+                    subnode.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
+                        &subnode.w_gate,
+                        &subnode.w_up,
+                        &subnode.w_down,
+                    ));
+                }
+            }
         }
     }
 
@@ -216,7 +232,7 @@ impl MicroBlockNode {
     }
 
     /// Process a batch of particles through Micro-Block CUDA/CPU computation pipeline (0 heap allocations)
-    pub fn process_batch(&mut self, particles: &mut [Particle]) {
+    pub fn process_batch(&mut self, particles: &mut [Particle], is_training: bool) {
         let batch_size = particles.len();
         if batch_size == 0 {
             return;
@@ -261,7 +277,11 @@ impl MicroBlockNode {
                 }
 
                 // Backprop E through all subnodes based on `last_p_in` (which generated `last_prediction`)
-                let lr = 0.01 / (self.config.max_hop as f32); // Configurable local LR
+                let lr = if is_training {
+                    0.01 / (self.config.max_hop as f32)
+                } else {
+                    0.0
+                }; // Configurable local LR
                 let weight_decay = 1e-4f32;
                 let wd_factor = 1.0 - lr * weight_decay;
 
@@ -319,6 +339,29 @@ impl MicroBlockNode {
 
                 for subnode in self.subnodes.iter_mut() {
                     let alpha = subnode.alpha;
+                    let ffn_dim = self.config.d_head * self.config.ffn_expansion;
+
+                    if self.use_cuda {
+                        annp_cuda::ffi::CudaMicroBlockRunner::execute_backward(
+                            &self.last_p_in,
+                            &self.k_cache,
+                            &self.v_cache,
+                            &mut subnode.w_gate,
+                            &mut subnode.w_up,
+                            &mut subnode.w_down,
+                            &local_err,
+                            d_head,
+                            ffn_dim,
+                            kv_len,
+                            alpha,
+                            lr,
+                            weight_decay,
+                            None,
+                            true,
+                            subnode.d_weights.as_ref(),
+                        );
+                        continue;
+                    }
 
                     let mut s_mid = vec![0.0f32; d_head];
                     for d in 0..d_head {
@@ -443,6 +486,7 @@ impl MicroBlockNode {
                 alpha,
                 None,
                 self.use_cuda,
+                subnode.d_weights.as_ref(),
             );
 
             for d in 0..d_head {
@@ -516,7 +560,7 @@ mod tests {
         let p2 = Particle::new(ParticleHeader::new(1, 0, 1.0), vec![0.8f32; 64]);
         let mut batch = vec![p1, p2];
 
-        node.process_batch(&mut batch);
+        node.process_batch(&mut batch, true);
         assert_eq!(node.activation_count, 2);
         assert_eq!(node.cumulative_sequence_len, 2);
 

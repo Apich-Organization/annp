@@ -45,6 +45,7 @@ pub struct ANNPModel {
     pub nodes: Vec<MicroBlockNode>,
     pub topology: TopologyGrid,
     pub device: Device,
+    pub is_training: bool,
     // Reusable double-buffer queues for zero-alloc P2P particle routing
     pub node_queues: Vec<Vec<Particle>>,
     pub next_queues: Vec<Vec<Particle>>,
@@ -88,6 +89,7 @@ impl ANNPModel {
             nodes,
             topology,
             device,
+            is_training: true,
             node_queues,
             next_queues,
         }
@@ -158,7 +160,7 @@ impl ANNPModel {
                 // GPU Mode: Execute active nodes on CUDA GPU stream without CPU multi-threading contention
                 for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
                     if !batch.is_empty() {
-                        node.process_batch(batch);
+                        node.process_batch(batch, self.is_training);
                     }
                 }
             } else {
@@ -172,6 +174,7 @@ impl ANNPModel {
                         let node_addr = node as *mut MicroBlockNode as usize;
                         let batch_ptr = batch as *mut Vec<Particle> as usize;
 
+                        let is_train = self.is_training;
                         let _handle = dtact::spawn(async move {
                             #[cfg(target_arch = "x86_64")]
                             unsafe {
@@ -199,7 +202,7 @@ impl ANNPModel {
                             let b_ptr = batch_ptr as *mut Vec<Particle>;
                             let c_ptr = counter_ptr as *const AtomicUsize;
                             unsafe {
-                                (*node_ptr).process_batch(&mut *b_ptr);
+                                (*node_ptr).process_batch(&mut *b_ptr, is_train);
                                 (*c_ptr).fetch_sub(1, Ordering::Release);
                             }
                         });

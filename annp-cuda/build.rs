@@ -92,7 +92,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cuda/common.cuh");
     println!("cargo:rerun-if-changed=cuda/micro_block_fused.cu");
     println!("cargo:rerun-if-changed=cuda/particle_router.cu");
-    println!("cargo:rerun-if-changed=cuda/particle_aggregator.cu");
+    println!("cargo:rerun-if-changed=cuda/common.cuh");
 
     let has_nvcc = Command::new("nvcc")
         .arg("--version")
@@ -106,11 +106,7 @@ fn main() {
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
-        let cu_files = vec![
-            "cuda/micro_block_fused.cu",
-            "cuda/particle_router.cu",
-            "cuda/particle_aggregator.cu",
-        ];
+        let cu_files = vec!["cuda/micro_block_fused.cu", "cuda/particle_router.cu"];
 
         // Step 1: Query MSVC toolchain if target_os == windows to locate cl.exe
         let msvc_tool = if target_env == "msvc" {

@@ -24,14 +24,36 @@ impl ParticleCudaHeader {
     pub fn is_halted(&self) -> bool {
         self.halted != 0
     }
-
     pub fn set_halted(&mut self, h: bool) {
         self.halted = if h { 1 } else { 0 };
     }
 }
 
+unsafe extern "C" {
+    fn launch_fused_micro_block_backward(
+        p_in: *const f32,
+        k_cache: *const f32,
+        v_cache: *const f32,
+        w_gate: *mut f32,
+        w_up: *mut f32,
+        w_down: *mut f32,
+        local_err: *const f32,
+        d_head: i32,
+        ffn_dim: i32,
+        kv_len: i32,
+        alpha: f32,
+        lr: f32,
+        weight_decay: f32,
+        stream: *mut std::ffi::c_void,
+    );
+}
+
 #[cfg(cuda_available)]
 unsafe extern "C" {
+    pub fn cudaMalloc(devPtr: *mut *mut c_void, size: usize) -> i32;
+    pub fn cudaFree(devPtr: *mut c_void) -> i32;
+    pub fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: i32) -> i32;
+
     pub fn launch_fused_micro_block(
         p_in: *const f32,
         k_cache: *const f32,
@@ -45,15 +67,6 @@ unsafe extern "C" {
         ffn_dim: i32,
         kv_len: i32,
         alpha: f32,
-        stream: *mut c_void,
-    );
-
-    pub fn launch_particle_prefetch_aggregate(
-        src_particles: *const f32,
-        dst_buffer: *mut f32,
-        active_indices: *const i32,
-        num_particles: i32,
-        d_head: i32,
         stream: *mut c_void,
     );
 
@@ -93,10 +106,11 @@ impl CudaMicroBlockRunner {
         ffn_dim: usize,
         kv_len: usize,
         alpha: f32,
+        d_weights: Option<&CudaDeviceWeights>,
     ) {
         Self::execute_fused_with_stream_device(
             p_in, k_cache, v_cache, w_gate, w_up, w_down, p_out, batch_size, d_head, ffn_dim,
-            kv_len, alpha, None, true,
+            kv_len, alpha, None, true, d_weights,
         );
     }
 
@@ -114,10 +128,11 @@ impl CudaMicroBlockRunner {
         kv_len: usize,
         alpha: f32,
         stream: Option<&CudaStreamManager>,
+        d_weights: Option<&CudaDeviceWeights>,
     ) {
         Self::execute_fused_with_stream_device(
             p_in, k_cache, v_cache, w_gate, w_up, w_down, p_out, batch_size, d_head, ffn_dim,
-            kv_len, alpha, stream, true,
+            kv_len, alpha, stream, true, d_weights,
         );
     }
 
@@ -137,6 +152,7 @@ impl CudaMicroBlockRunner {
         alpha: f32,
         stream: Option<&CudaStreamManager>,
         use_cuda: bool,
+        d_weights: Option<&CudaDeviceWeights>,
     ) {
         if batch_size == 0 || d_head == 0 || ffn_dim == 0 {
             return;
@@ -197,13 +213,17 @@ impl CudaMicroBlockRunner {
             #[cfg(cuda_available)]
             unsafe {
                 let stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+                let w_gate_ptr = d_weights.map_or(w_gate.as_ptr(), |d| d.d_w_gate as *const f32);
+                let w_up_ptr = d_weights.map_or(w_up.as_ptr(), |d| d.d_w_up as *const f32);
+                let w_down_ptr = d_weights.map_or(w_down.as_ptr(), |d| d.d_w_down as *const f32);
+
                 launch_fused_micro_block(
                     p_in.as_ptr(),
                     k_cache.as_ptr(),
                     v_cache.as_ptr(),
-                    w_gate.as_ptr(),
-                    w_up.as_ptr(),
-                    w_down.as_ptr(),
+                    w_gate_ptr,
+                    w_up_ptr,
+                    w_down_ptr,
                     p_out.as_mut_ptr(),
                     batch_size as i32,
                     d_head as i32,
@@ -562,6 +582,57 @@ impl CudaMicroBlockRunner {
             }
         }
     }
+
+    #[allow(unused_variables)]
+    pub fn execute_backward(
+        p_in: &[f32],
+        k_cache: &[f32],
+        v_cache: &[f32],
+        w_gate: &mut [f32],
+        w_up: &mut [f32],
+        w_down: &mut [f32],
+        local_err: &[f32],
+        d_head: usize,
+        ffn_dim: usize,
+        kv_len: usize,
+        alpha: f32,
+        lr: f32,
+        weight_decay: f32,
+        stream: Option<&CudaStreamManager>,
+        use_cuda: bool,
+        d_weights: Option<&CudaDeviceWeights>,
+    ) {
+        if d_head == 0 || ffn_dim == 0 {
+            return;
+        }
+
+        if use_cuda {
+            #[cfg(cuda_available)]
+            unsafe {
+                let stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
+                let w_gate_ptr = d_weights.map_or(w_gate.as_mut_ptr(), |d| d.d_w_gate as *mut f32);
+                let w_up_ptr = d_weights.map_or(w_up.as_mut_ptr(), |d| d.d_w_up as *mut f32);
+                let w_down_ptr = d_weights.map_or(w_down.as_mut_ptr(), |d| d.d_w_down as *mut f32);
+
+                launch_fused_micro_block_backward(
+                    p_in.as_ptr(),
+                    k_cache.as_ptr(),
+                    v_cache.as_ptr(),
+                    w_gate_ptr,
+                    w_up_ptr,
+                    w_down_ptr,
+                    local_err.as_ptr(),
+                    d_head as i32,
+                    ffn_dim as i32,
+                    kv_len as i32,
+                    alpha,
+                    lr,
+                    weight_decay,
+                    stream_ptr,
+                );
+            }
+        }
+    }
 }
 
 /// Safe Rust interface wrapper for Particle Q-Router Computation.
@@ -874,147 +945,94 @@ impl CudaParticleRouter {
     }
 }
 
-/// Safe Rust interface wrapper for Particle Aggregation / Prefetching.
-pub struct CudaParticleAggregator;
+#[derive(Debug)]
+pub struct CudaDeviceWeights {
+    pub d_w_gate: *mut f32,
+    pub d_w_up: *mut f32,
+    pub d_w_down: *mut f32,
+}
 
-impl CudaParticleAggregator {
-    pub fn execute_prefetch(
-        src_particles: &[f32],
-        dst_buffer: &mut [f32],
-        active_indices: Option<&[usize]>,
-        num_particles: usize,
-        d_head: usize,
-    ) {
-        Self::execute_prefetch_with_stream_device(
-            src_particles,
-            dst_buffer,
-            active_indices,
-            num_particles,
-            d_head,
-            None,
-            true,
-        );
-    }
-
-    pub fn execute_prefetch_with_stream(
-        src_particles: &[f32],
-        dst_buffer: &mut [f32],
-        active_indices: Option<&[usize]>,
-        num_particles: usize,
-        d_head: usize,
-        stream: Option<&CudaStreamManager>,
-    ) {
-        Self::execute_prefetch_with_stream_device(
-            src_particles,
-            dst_buffer,
-            active_indices,
-            num_particles,
-            d_head,
-            stream,
-            true,
-        );
-    }
-
+impl CudaDeviceWeights {
     #[allow(unused_variables)]
-    pub fn execute_prefetch_with_stream_device(
-        src_particles: &[f32],
-        dst_buffer: &mut [f32],
-        active_indices: Option<&[usize]>,
-        num_particles: usize,
-        d_head: usize,
-        stream: Option<&CudaStreamManager>,
-        use_cuda: bool,
-    ) {
-        if num_particles == 0 || d_head == 0 {
-            return;
-        }
+    pub fn new(w_gate: &[f32], w_up: &[f32], w_down: &[f32]) -> Self {
+        #[cfg(cuda_available)]
+        {
+            let mut d_w_gate: *mut f32 = std::ptr::null_mut();
+            let mut d_w_up: *mut f32 = std::ptr::null_mut();
+            let mut d_w_down: *mut f32 = std::ptr::null_mut();
 
-        assert!(num_particles <= i32::MAX as usize);
-        assert!(d_head <= i32::MAX as usize);
-
-        assert!(
-            dst_buffer.len() >= num_particles * d_head,
-            "dst_buffer slice too small: expected {}, got {}",
-            num_particles * d_head,
-            dst_buffer.len()
-        );
-
-        if let Some(idxs) = active_indices {
-            assert!(
-                idxs.len() >= num_particles,
-                "active_indices slice too small: expected {}, got {}",
-                num_particles,
-                idxs.len()
-            );
-            for &idx in idxs.iter().take(num_particles) {
-                assert!(
-                    src_particles.len() >= (idx + 1) * d_head,
-                    "active_index {} out of bounds for src_particles len {}",
-                    idx,
-                    src_particles.len()
-                );
-            }
-        } else {
-            assert!(
-                src_particles.len() >= num_particles * d_head,
-                "src_particles slice too small: expected {}, got {}",
-                num_particles * d_head,
-                src_particles.len()
-            );
-        }
-
-        if use_cuda {
-            #[cfg(cuda_available)]
-            {
-                let stream_ptr = stream.map_or(std::ptr::null_mut(), |s| s.stream_ptr());
-                let indices_i32: Option<Vec<i32>> =
-                    active_indices.map(|idxs| idxs.iter().map(|&i| i as i32).collect());
-                let idx_ptr = indices_i32
-                    .as_ref()
-                    .map_or(std::ptr::null(), |v| v.as_ptr());
-
-                unsafe {
-                    launch_particle_prefetch_aggregate(
-                        src_particles.as_ptr(),
-                        dst_buffer.as_mut_ptr(),
-                        idx_ptr,
-                        num_particles as i32,
-                        d_head as i32,
-                        stream_ptr,
+            unsafe {
+                if cudaMalloc(
+                    &mut d_w_gate as *mut _ as *mut *mut std::ffi::c_void,
+                    w_gate.len() * 4,
+                ) == 0
+                {
+                    cudaMemcpy(
+                        d_w_gate as *mut std::ffi::c_void,
+                        w_gate.as_ptr() as *const std::ffi::c_void,
+                        w_gate.len() * 4,
+                        1,
                     );
                 }
-                return;
+                if cudaMalloc(
+                    &mut d_w_up as *mut _ as *mut *mut std::ffi::c_void,
+                    w_up.len() * 4,
+                ) == 0
+                {
+                    cudaMemcpy(
+                        d_w_up as *mut std::ffi::c_void,
+                        w_up.as_ptr() as *const std::ffi::c_void,
+                        w_up.len() * 4,
+                        1,
+                    );
+                }
+                if cudaMalloc(
+                    &mut d_w_down as *mut _ as *mut *mut std::ffi::c_void,
+                    w_down.len() * 4,
+                ) == 0
+                {
+                    cudaMemcpy(
+                        d_w_down as *mut std::ffi::c_void,
+                        w_down.as_ptr() as *const std::ffi::c_void,
+                        w_down.len() * 4,
+                        1,
+                    );
+                }
+            }
+
+            Self {
+                d_w_gate,
+                d_w_up,
+                d_w_down,
             }
         }
-
-        Self::execute_prefetch_fallback(
-            src_particles,
-            dst_buffer,
-            active_indices,
-            num_particles,
-            d_head,
-        );
-    }
-
-    fn execute_prefetch_fallback(
-        src_particles: &[f32],
-        dst_buffer: &mut [f32],
-        active_indices: Option<&[usize]>,
-        num_particles: usize,
-        d_head: usize,
-    ) {
-        for pid in 0..num_particles {
-            let src_idx = active_indices.map_or(pid, |idxs| idxs[pid]);
-            assert!(
-                src_particles.len() >= (src_idx + 1) * d_head,
-                "src_particles slice too small for index {}: expected {}, got {}",
-                src_idx,
-                (src_idx + 1) * d_head,
-                src_particles.len()
-            );
-            let src_slice = &src_particles[src_idx * d_head..(src_idx + 1) * d_head];
-            let dst_slice = &mut dst_buffer[pid * d_head..(pid + 1) * d_head];
-            dst_slice.copy_from_slice(src_slice);
+        #[cfg(not(cuda_available))]
+        {
+            Self {
+                d_w_gate: std::ptr::null_mut(),
+                d_w_up: std::ptr::null_mut(),
+                d_w_down: std::ptr::null_mut(),
+            }
         }
     }
 }
+
+impl Drop for CudaDeviceWeights {
+    fn drop(&mut self) {
+        #[cfg(cuda_available)]
+        unsafe {
+            if !self.d_w_gate.is_null() {
+                cudaFree(self.d_w_gate as *mut std::ffi::c_void);
+            }
+            if !self.d_w_up.is_null() {
+                cudaFree(self.d_w_up as *mut std::ffi::c_void);
+            }
+            if !self.d_w_down.is_null() {
+                cudaFree(self.d_w_down as *mut std::ffi::c_void);
+            }
+        }
+    }
+}
+
+unsafe impl Send for CudaDeviceWeights {}
+unsafe impl Sync for CudaDeviceWeights {}

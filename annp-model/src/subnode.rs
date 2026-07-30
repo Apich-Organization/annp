@@ -1,7 +1,8 @@
 use annp_core::OnlineStats;
+use annp_cuda::ffi::CudaDeviceWeights;
 use rand::Rng;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Subnode {
     pub subnode_id: usize,
     pub w_gate: Vec<f32>, // [d_head, ffn_dim]
@@ -15,6 +16,25 @@ pub struct Subnode {
     /// Empirical local credit; reset on checkpoint restore because it is an
     /// online decision aid, not model knowledge.
     pub credit_stats: OnlineStats,
+    pub d_weights: Option<CudaDeviceWeights>,
+}
+
+impl Clone for Subnode {
+    fn clone(&self) -> Self {
+        Self {
+            subnode_id: self.subnode_id,
+            w_gate: self.w_gate.clone(),
+            w_up: self.w_up.clone(),
+            w_down: self.w_down.clone(),
+            v_gate: self.v_gate.clone(),
+            v_up: self.v_up.clone(),
+            v_down: self.v_down.clone(),
+            alpha: self.alpha,
+            activation_count: self.activation_count,
+            credit_stats: self.credit_stats.clone(),
+            d_weights: None, // Will be initialized by the model
+        }
+    }
 }
 
 impl Subnode {
@@ -49,6 +69,7 @@ impl Subnode {
             alpha: alpha_init,
             activation_count: 0,
             credit_stats: OnlineStats::default(),
+            d_weights: None,
         }
     }
 
@@ -89,6 +110,7 @@ impl Subnode {
             alpha: parent.alpha,
             activation_count: 0,
             credit_stats: OnlineStats::default(),
+            d_weights: None,
         }
     }
 }

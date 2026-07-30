@@ -47,6 +47,7 @@ pub fn execute_run(
         device.clone(),
         use_cuda,
     );
+    model.is_training = continual_mode;
 
     if let Some(ckpt_path) = checkpoint_path {
         println!("Loading Checkpoint: {:?}", ckpt_path);
@@ -102,12 +103,12 @@ pub fn execute_run(
     let mut generated_ids = Vec::new();
     let mut current_len = seq_len;
 
-    for step in 0..generate_len {
+    for _step in 0..generate_len {
         let (out, _) = model.forward(&current_sequence, 0)?;
         total_particles_processed += current_len * num_shards;
 
         if continual_mode {
-            // Continual adaptation hook
+            // Continual adaptation hook - model.forward automatically updates weights when is_training is true
         }
 
         // Extract the prediction for the next token (the output of the last sequence element)
