@@ -46,7 +46,8 @@ impl TokenScattering {
                 let end_idx = start_idx + self.d_head;
                 let payload = flat_data[start_idx..end_idx].to_vec();
 
-                let header = ParticleHeader::new((t + offset) as u32, shard_i as u16, config.initial_energy);
+                let header =
+                    ParticleHeader::new((t + offset) as u32, shard_i as u16, config.initial_energy);
                 particles.push(Particle::new(header, payload));
             }
         }

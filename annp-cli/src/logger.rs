@@ -58,7 +58,7 @@ impl AnnpLogger {
 
     pub fn log(&self, tag: &str, msg: &str) {
         let timestamp = chrono_timestamp();
-        let formatted = format!("[{}] [{}] {}\n", timestamp, tag, msg);
+        let formatted = format!("[{}] {} | {}\n", timestamp, tag, msg);
 
         // Always print to console
         print!("{}", formatted);
@@ -74,7 +74,6 @@ impl AnnpLogger {
 
     pub fn log_step(
         &self,
-        stage: usize,
         epoch: usize,
         total_epochs: usize,
         batch_idx: usize,
@@ -82,8 +81,8 @@ impl AnnpLogger {
         rolling_loss: f32,
     ) {
         let msg = format!(
-            "[Stage {} | Epoch {:2}/{:2} | Batch {:4}] Step Loss: {:.6} | Rolling Loss: {:.6}",
-            stage, epoch, total_epochs, batch_idx, step_loss, rolling_loss
+            "[Epoch {:2}/{:2} | Batch {:4}] Step Loss: {:.6} | Rolling Loss: {:.6}",
+            epoch, total_epochs, batch_idx, step_loss, rolling_loss
         );
         self.log("TRAIN_STEP", &msg);
     }

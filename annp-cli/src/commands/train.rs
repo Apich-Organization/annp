@@ -63,7 +63,6 @@ pub fn execute_train(
         use_cuda,
     );
 
-    let mut start_stage = 0;
     let mut start_epoch = 0;
 
     // Handle Checkpoint Resume
@@ -75,22 +74,16 @@ pub fn execute_train(
         );
         let ckpt = ModelCheckpoint::load(ckpt_path)?;
         ckpt.apply_to_model(&mut model);
-        start_stage = ckpt.stage_completed;
         start_epoch = ckpt.epoch_completed + 1;
         logger.log(
             "RESUME",
-            &format!(
-                "Successfully resumed from Stage {}, Epoch {}.",
-                start_stage, start_epoch
-            ),
+            &format!("Successfully resumed from Epoch {}.", start_epoch),
         );
     }
 
-    let stages_to_run: Vec<usize> = vec![0];
-
     logger.log(
         "SYSTEM",
-        "=== Starting ANNP Streamlined 2-Stage Evolutionary Training Pipeline ===",
+        "=== Starting ANNP Evolutionary Training Pipeline ===",
     );
     logger.log(
         "SYSTEM",
@@ -108,119 +101,96 @@ pub fn execute_train(
         checkpoint_format.to_lowercase() == "annpb" || checkpoint_format.to_lowercase() == "binary";
     let file_ext = if use_binary { "annpb" } else { "json" };
 
-    for &stg in &stages_to_run {
-        if is_resumed && stg < start_stage {
-            logger.log(
-                "RESUME",
-                &format!("Skipping already completed Stage {}.", stg),
-            );
-            continue;
-        }
+    let train_epochs = toml_config.train.epochs;
+    let train_lr = toml_config.train.learning_rate;
+    let train_cfg = &toml_config.train;
 
-        let stage_name = "Stage 0: Global Wave Exploration";
-        let stage_epochs = toml_config.stage0_wave.epochs;
-        let stage_lr = toml_config.stage0_wave.learning_rate;
-        let stage_cfg = &toml_config.stage0_wave;
+    logger.log(
+        "TRAIN",
+        &format!(
+            ">>> Launching Training: Epochs = {}, LR = {}",
+            train_epochs, train_lr
+        ),
+    );
 
+    let dataset_path = train_cfg.dataset_path.as_deref().unwrap_or("synthetic");
+    let format_str = train_cfg.dataset_format.as_deref().unwrap_or("synthetic");
+    let dataset_fmt = DatasetFormat::parse(format_str);
+
+    let epoch_start_val = if is_resumed { start_epoch } else { 0 };
+
+    if is_resumed && epoch_start_val > 0 {
         logger.log(
-            "STAGE",
+            "RESUME",
             &format!(
-                ">>> Launching {}: Epochs = {}, LR = {}",
-                stage_name, stage_epochs, stage_lr
+                "Resuming Training: Skipping completed Epochs 1..{}, starting directly at Epoch {}/{}",
+                epoch_start_val, epoch_start_val + 1, train_epochs
+            ),
+        );
+    }
+
+    for epoch in epoch_start_val..train_epochs {
+        logger.log(
+            "EPOCH",
+            &format!(
+                "Streaming dataset from: {} ({}) [Epoch {}/{}]",
+                dataset_path,
+                format_str,
+                epoch + 1,
+                train_epochs
             ),
         );
 
-        let dataset_path = stage_cfg.dataset_path.as_deref().unwrap_or("synthetic");
-        let format_str = stage_cfg.dataset_format.as_deref().unwrap_or("synthetic");
-        let dataset_fmt = DatasetFormat::parse(format_str);
+        let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
+        let mut epoch_loss_sum = 0.0f32;
+        let mut step_count = 0;
+        let mut rolling_ema = 0.0f32;
 
-        let epoch_start_val = if is_resumed && stg == start_stage {
-            start_epoch
-        } else {
-            0
-        };
+        for (batch_idx, res) in stream.enumerate() {
+            let tensor = res?;
+            let mut trainer = Trainer::new(train_lr);
+            let step_loss = trainer.train_step_with_epoch(&mut model, &tensor, epoch)?;
 
-        if is_resumed && stg == start_stage && epoch_start_val > 0 {
-            logger.log(
-                "RESUME",
-                &format!(
-                    "Resuming Stage {}: Skipping completed Epochs 1..{}, starting directly at Epoch {}/{}",
-                    stg, epoch_start_val, epoch_start_val + 1, stage_epochs
-                ),
-            );
-        }
+            epoch_loss_sum += step_loss;
+            step_count += 1;
 
-        for epoch in epoch_start_val..stage_epochs {
-            logger.log(
-                "EPOCH",
-                &format!(
-                    "Streaming {} dataset from: {} ({}) [Epoch {}/{}]",
-                    stage_name,
-                    dataset_path,
-                    format_str,
+            rolling_ema = if step_count == 1 {
+                step_loss
+            } else {
+                0.9f32 * rolling_ema + 0.1f32 * step_loss
+            };
+
+            if (batch_idx + 1) % 2 == 0 {
+                logger.log_step(
                     epoch + 1,
-                    stage_epochs
-                ),
-            );
-
-            let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
-            let mut epoch_loss_sum = 0.0f32;
-            let mut step_count = 0;
-            let mut rolling_ema = 0.0f32;
-
-            for (batch_idx, res) in stream.enumerate() {
-                let tensor = res?;
-                let mut trainer = Trainer::new(stage_lr);
-                let step_loss = trainer.train_step_with_epoch(&mut model, &tensor, epoch)?;
-
-                epoch_loss_sum += step_loss;
-                step_count += 1;
-
-                rolling_ema = if step_count == 1 {
-                    step_loss
-                } else {
-                    0.9f32 * rolling_ema + 0.1f32 * step_loss
-                };
-
-                if (batch_idx + 1) % 2 == 0 {
-                    logger.log_step(
-                        stg,
-                        epoch + 1,
-                        stage_epochs,
-                        batch_idx + 1,
-                        step_loss,
-                        rolling_ema,
-                    );
-                }
+                    train_epochs,
+                    batch_idx + 1,
+                    step_loss,
+                    rolling_ema,
+                );
             }
-
-            let avg_epoch_loss = epoch_loss_sum / step_count.max(1) as f32;
-            logger.log(
-                "EPOCH_END",
-                &format!(
-                    "Stage {} Epoch {}/{} Complete. Average Loss: {:.6}",
-                    stg,
-                    epoch + 1,
-                    stage_epochs,
-                    avg_epoch_loss
-                ),
-            );
-
-            // Save intermediate checkpoint (.annpb binary or .json)
-            let ckpt = ModelCheckpoint::extract_from_model(&model, stg, epoch);
-            let ckpt_filename = output_dir.join(format!(
-                "checkpoint_stage{}_epoch{}.{}",
-                stg,
-                epoch + 1,
-                file_ext
-            ));
-            ckpt.save(&ckpt_filename)?;
-            println!("Saved intermediate checkpoint to: {:?}", ckpt_filename);
         }
+
+        let avg_epoch_loss = epoch_loss_sum / step_count.max(1) as f32;
+        logger.log(
+            "EPOCH_END",
+            &format!(
+                "Epoch {}/{} Complete. Average Loss: {:.6}",
+                epoch + 1,
+                train_epochs,
+                avg_epoch_loss
+            ),
+        );
+
+        // Save intermediate checkpoint (.annpb binary or .json)
+        let ckpt = ModelCheckpoint::extract_from_model(&model, 0, epoch);
+        let ckpt_filename = output_dir.join(format!("checkpoint_epoch{}.{}", epoch + 1, file_ext));
+        ckpt.save(&ckpt_filename)?;
+        println!("Saved intermediate checkpoint to: {:?}", ckpt_filename);
     }
 
     println!("\n============================================================");
-    println!("ANNP Streamlined 2-Stage Training Completed Successfully!");
+    println!("ANNP Training Completed Successfully!");
     println!(
         "Final Model Checkpoints saved to directory: {:?}",
         output_dir

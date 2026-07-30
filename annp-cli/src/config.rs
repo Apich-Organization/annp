@@ -8,8 +8,7 @@ use std::path::Path;
 pub struct AnnpTomlConfig {
     pub model: ModelSection,
     pub eviction: EvictionSection,
-    pub stage0_wave: StageConfig,
-    pub stage1_hardening: StageConfig,
+    pub train: TrainConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,8 +30,7 @@ pub struct EvictionSection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StageConfig {
-    pub enabled: bool,
+pub struct TrainConfig {
     pub epochs: usize,
     pub learning_rate: f32,
     pub dataset_path: Option<String>,
@@ -56,16 +54,8 @@ impl Default for AnnpTomlConfig {
             eviction: EvictionSection {
                 subnode_max: Some(8),
             },
-            stage0_wave: StageConfig {
-                enabled: true,
+            train: TrainConfig {
                 epochs: 8,
-                learning_rate: 0.02,
-                dataset_path: Some("synthetic".to_string()),
-                dataset_format: Some("synthetic".to_string()),
-            },
-            stage1_hardening: StageConfig {
-                enabled: true,
-                epochs: 15,
                 learning_rate: 0.02,
                 dataset_path: Some("synthetic".to_string()),
                 dataset_format: Some("synthetic".to_string()),

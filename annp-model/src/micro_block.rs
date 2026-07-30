@@ -16,7 +16,7 @@ pub struct MicroBlockNode {
     pub kv_shard_ids: Vec<u16>,
     pub max_kv_len: usize,
     // Last activation cache for exact chain-rule backpropagation
-    pub last_p_in: Vec<f32>, // [d_head]
+    pub last_p_in: Vec<f32>,       // [d_head]
     pub last_prediction: Vec<f32>, // [d_head]
     pub last_token_id: Option<u32>,
     // Node state statistics
@@ -184,7 +184,6 @@ impl MicroBlockNode {
         old_len - self.subnodes.len()
     }
 
-
     fn local_agreement(&self, particle: &Particle, payload: &[f32]) -> Option<f32> {
         let d_head = self.config.d_head;
         let payload_norm = payload.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
@@ -244,7 +243,7 @@ impl MicroBlockNode {
         }
 
         self.last_p_in.copy_from_slice(&self.p_in_buf);
-        
+
         let mut majority_token_id = 0;
         if let Some(p) = particles.first() {
             majority_token_id = p.header.origin_token_id;
@@ -260,7 +259,7 @@ impl MicroBlockNode {
                 for d in 0..d_head {
                     local_err[d] = self.last_prediction[d] - self.p_in_buf[d];
                 }
-                
+
                 // Backprop E through all subnodes based on `last_p_in` (which generated `last_prediction`)
                 let lr = 0.01 / (self.config.max_hop as f32); // Configurable local LR
                 let weight_decay = 1e-4f32;
@@ -346,7 +345,7 @@ impl MicroBlockNode {
                         }
                     }
                 }
-                
+
                 // Keep track of average error magnitude in primary subnode for splitting criteria
                 let err_mag: f32 = local_err.iter().map(|&x| x.abs()).sum::<f32>() / d_head as f32;
                 // Observe negative error so that higher error means worse credit
@@ -384,12 +383,12 @@ impl MicroBlockNode {
                 None,
                 self.use_cuda,
             );
-            
+
             for d in 0..d_head {
                 self.p_out_buf[d] += temp_out[d] - self.p_in_buf[d];
             }
         }
-        
+
         self.last_prediction.copy_from_slice(&self.p_out_buf);
 
         // Update particles, evaluation halting condition and metrics
@@ -440,8 +439,6 @@ impl MicroBlockNode {
         self.cumulative_sequence_len += batch_size as u64;
         self.subnodes[active].activation_count += batch_size as u64;
     }
-
-
 }
 
 #[cfg(test)]

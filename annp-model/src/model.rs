@@ -109,11 +109,10 @@ impl ANNPModel {
 
     /// Forward pass through ANNP P2P Mesh with lock-free dtact coroutine mesh scheduling
     pub fn forward(&mut self, embeddings: &Tensor, offset: usize) -> Result<(Tensor, f32)> {
-
         let (seq_len, _) = embeddings.dims2()?;
-        let mut initial_particles = self
-            .scattering
-            .scatter_embeddings(embeddings, &self.config, offset)?;
+        let mut initial_particles =
+            self.scattering
+                .scatter_embeddings(embeddings, &self.config, offset)?;
         for particle in &mut initial_particles {
             particle.trace_concentration = 1.0;
         }
@@ -291,7 +290,11 @@ impl ANNPModel {
             total_loss += node.local_loss_accumulator;
             total_count += node.local_loss_count;
         }
-        let avg_loss = if total_count > 0 { total_loss / total_count as f32 } else { 0.0 };
+        let avg_loss = if total_count > 0 {
+            total_loss / total_count as f32
+        } else {
+            0.0
+        };
 
         Ok((out_tensor, avg_loss))
     }

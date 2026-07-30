@@ -23,26 +23,20 @@ impl Trainer {
         _epoch_idx: usize,
     ) -> Result<f32> {
         let (full_seq_len, _d_model) = input_embeddings.dims2()?;
-        
+
         // Reset node KV Caches before each sequence to prevent cross-sequence pollution
         model.reset_state();
 
-        let mut total_seq_loss = 0.0;
+        let mut final_seq_loss = 0.0;
 
         // Feed tokens sequentially to allow temporal difference learning to emerge from the particle flow
         for i in 0..full_seq_len {
             let single_token = input_embeddings.narrow(0, i, 1)?;
             let (_, step_loss) = model.forward(&single_token, i)?;
-            total_seq_loss += step_loss;
+            final_seq_loss = step_loss; // model.forward returns the cumulative average loss across all nodes
         }
 
-        let avg_seq_loss = if full_seq_len > 0 {
-            total_seq_loss / full_seq_len as f32
-        } else {
-            0.0
-        };
-
-        Ok(avg_seq_loss)
+        Ok(final_seq_loss)
     }
 }
 

@@ -1,6 +1,6 @@
 use annp_core::MicroBlockConfig;
 use annp_model::ANNPModel;
-use annp_trainer::{Trainer};
+use annp_trainer::Trainer;
 use candle_core::{Device, Tensor};
 
 fn main() -> candle_core::Result<()> {

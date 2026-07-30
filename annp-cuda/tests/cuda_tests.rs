@@ -20,18 +20,8 @@ fn test_micro_block_fused_rmsnorm() {
     let mut p_out = vec![0.0f32; batch_size * d_head];
 
     CudaMicroBlockRunner::execute_fused(
-        &p_in,
-        &k_cache,
-        &v_cache,
-        &w_gate,
-        &w_up,
-        &w_down,
-        &mut p_out,
-        batch_size,
-        d_head,
-        ffn_dim,
-        kv_len,
-        alpha,
+        &p_in, &k_cache, &v_cache, &w_gate, &w_up, &w_down, &mut p_out, batch_size, d_head,
+        ffn_dim, kv_len, alpha,
     );
 
     // Verify non-zero output and reasonable values
@@ -60,18 +50,8 @@ fn test_micro_block_fused_spherenorm() {
     let mut p_out = vec![0.0f32; d_head];
 
     CudaMicroBlockRunner::execute_fused(
-        &p_in,
-        &k_cache,
-        &v_cache,
-        &w_gate,
-        &w_up,
-        &w_down,
-        &mut p_out,
-        batch_size,
-        d_head,
-        ffn_dim,
-        kv_len,
-        alpha,
+        &p_in, &k_cache, &v_cache, &w_gate, &w_up, &w_down, &mut p_out, batch_size, d_head,
+        ffn_dim, kv_len, alpha,
     );
 
     // After removing sphere_radius, we just check output is finite
