@@ -98,13 +98,13 @@ impl AnnpLogger {
     ) {
         let remaining_links = links_before.saturating_sub(links_pruned);
         let mut msg = format!(
-            "Hardening Pass (Epoch {}): Pruned {} links (Remaining: {}). Spawning {} new nodes via Neurogenesis.",
+            "Hardening Pass (Epoch {}): Pruned {} links (Remaining: {}). Spawned {} local subnodes.",
             epoch, links_pruned, remaining_links, nodes_grown
         );
 
         for (p_a, p_b, new_id) in spawn_details {
             msg.push_str(&format!(
-                "\n  -> Neurogenesis Event: Node A ({}) & Node B ({}) -> Spawned Node C ({})",
+                "\n  -> Node {}: subnodes {} -> {}",
                 p_a, p_b, new_id
             ));
         }

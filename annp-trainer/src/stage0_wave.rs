@@ -47,8 +47,14 @@ impl Stage0WaveTrainer {
 
         let diff_vec = diff.flatten_all()?.to_vec1::<f32>()?;
 
+        // `forward` returns RMS-bounded egress vectors.  Transform the MSE
+        // residual through that final normalization before updating either the
+        // serializer or the particle-side approximation.
+        let projected_grad = model.serializer.backprop_output_rms(&diff_vec);
+        let input_grad = model.serializer.input_gradient(&projected_grad);
+
         // 1. Update Egress Serializer with full diff_vec
-        model.serializer.update_weights(&diff_vec, lr_decay);
+        model.serializer.update_weights(&projected_grad, lr_decay);
 
         // 2. Compute exact Shard-Specific Error Vectors: shard_err[s] of dimension d_head
         let mut shard_errs = vec![vec![0.0f32; d_head]; num_shards];
@@ -56,7 +62,7 @@ impl Stage0WaveTrainer {
             for s in 0..num_shards {
                 let base_idx = t * d_model + s * d_head;
                 for d in 0..d_head {
-                    shard_errs[s][d] += diff_vec[base_idx + d];
+                    shard_errs[s][d] += input_grad[base_idx + d];
                 }
             }
         }

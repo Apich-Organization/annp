@@ -50,6 +50,7 @@ pub struct ANNPModel {
     // Reusable double-buffer queues for zero-alloc P2P particle routing
     pub node_queues: Vec<Vec<Particle>>,
     pub next_queues: Vec<Vec<Particle>>,
+    pub wave_id: u64,
 }
 
 impl ANNPModel {
@@ -94,6 +95,7 @@ impl ANNPModel {
             device,
             node_queues,
             next_queues,
+            wave_id: 0,
         }
     }
 
@@ -103,13 +105,21 @@ impl ANNPModel {
         for node in self.nodes.iter_mut() {
             node.k_cache.clear();
             node.v_cache.clear();
+            node.kv_wave_ids.clear();
+            node.kv_token_ids.clear();
+            node.kv_shard_ids.clear();
             node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
+            node.recent_activation_count = 0;
         }
 
         let (seq_len, _) = embeddings.dims2()?;
-        let initial_particles = self
+        self.wave_id = self.wave_id.wrapping_add(1);
+        let mut initial_particles = self
             .scattering
             .scatter_embeddings(embeddings, &self.config)?;
+        for particle in &mut initial_particles {
+            particle.wave_id = self.wave_id;
+        }
 
         for q in self.node_queues.iter_mut() {
             q.clear();
@@ -213,7 +223,9 @@ impl ANNPModel {
                 }
                 active_loop = true;
 
-                let neighbors = &self.topology.routing_tables[node_id].neighbors;
+                // Clone this small local adjacency list so a route can be
+                // reinforced below without holding an immutable table borrow.
+                let neighbors = self.topology.routing_tables[node_id].neighbors.clone();
 
                 for p in curr_batch.drain(..) {
                     if p.header.halted {
@@ -229,6 +241,10 @@ impl ANNPModel {
                             } else {
                                 next_hop = (next_hop + 1) % self.num_nodes;
                             }
+                        }
+                        if p.credit_valid {
+                            self.topology.routing_tables[node_id]
+                                .observe_credit(next_hop, p.credit);
                         }
                         self.next_queues[next_hop].push(p);
                     }

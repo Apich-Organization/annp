@@ -43,11 +43,29 @@ impl ParticleHeader {
 pub struct Particle {
     pub header: ParticleHeader,
     pub payload: Vec<f32>,
+    /// Identifies one independent input excitation without imposing causal
+    /// ordering inside that excitation.
+    #[serde(default)]
+    pub wave_id: u64,
+    /// Local contrastive improvement written by the node that last processed
+    /// this particle. It is the sole routing-learning signal.
+    #[serde(default)]
+    pub credit: f32,
+    /// `false` means this node had no comparable local context. Absence of a
+    /// measurement must never be interpreted as zero or negative evidence.
+    #[serde(default)]
+    pub credit_valid: bool,
 }
 
 impl Particle {
     pub fn new(header: ParticleHeader, payload: Vec<f32>) -> Self {
-        Self { header, payload }
+        Self {
+            header,
+            payload,
+            wave_id: 0,
+            credit: 0.0,
+            credit_valid: false,
+        }
     }
 
     pub fn d_head(&self) -> usize {

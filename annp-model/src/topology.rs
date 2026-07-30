@@ -1,4 +1,4 @@
-use annp_core::Particle;
+use annp_core::{OnlineStats, Particle};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,8 @@ pub struct RoutingTable {
     pub d_head: usize,
     pub neighbors: Vec<usize>,
     pub weights: Vec<f32>, // Flat [d_head * num_neighbors]
+    #[serde(default)]
+    pub edge_credit: Vec<OnlineStats>,
 }
 
 impl RoutingTable {
@@ -25,6 +27,7 @@ impl RoutingTable {
             d_head,
             neighbors,
             weights,
+            edge_credit: vec![OnlineStats::default(); num_neighbors],
         }
     }
 
@@ -50,54 +53,133 @@ impl RoutingTable {
 
         self.neighbors.push(neighbor_id);
         self.weights = new_weights;
+        self.edge_credit.push(OnlineStats::default());
     }
 
-    /// Predict next hop neighbor node index using Q-Routing dot product + Softmax (0 heap allocations)
-    pub fn select_next_hop(&self, particle: &Particle, temperature: f32) -> usize {
+    fn ensure_edge_credit(&mut self) {
+        if self.edge_credit.len() != self.neighbors.len() {
+            self.edge_credit = vec![OnlineStats::default(); self.neighbors.len()];
+        }
+    }
+
+    /// Select from local content affinity and empirically observed local credit.
+    /// Both are normalized only across this node's own neighbors; no broadcast,
+    /// global scale, or manually weighted score is involved.
+    pub fn select_next_hop(&self, particle: &Particle, _temperature: f32) -> usize {
         let num_neighbors = self.neighbors.len();
         if num_neighbors == 0 {
             return 0;
         }
 
         let n_clamped = num_neighbors.min(64);
-        let mut logits = [0.0f32; 64];
-        let mut exps = [0.0f32; 64];
+        let mut content = [0.0f32; 64];
+        let mut evidence = [0.0f32; 64];
 
-        let temp_inv = 1.0 / temperature.max(1e-4);
-        let mut max_logit = f32::NEG_INFINITY;
+        let mut content_mean = 0.0;
+        let mut evidence_mean = 0.0;
 
         for k in 0..n_clamped {
             let mut dot = 0.0f32;
             for d in 0..self.d_head {
                 dot += particle.payload[d] * self.weights[d * num_neighbors + k];
             }
-            let l = dot * temp_inv;
-            logits[k] = l;
-            if l > max_logit {
-                max_logit = l;
+            content[k] = dot;
+            evidence[k] = self
+                .edge_credit
+                .get(k)
+                .map(OnlineStats::optimistic_value)
+                .unwrap_or(f32::INFINITY);
+            content_mean += content[k];
+            evidence_mean += evidence[k];
+        }
+        content_mean /= n_clamped as f32;
+        evidence_mean /= n_clamped as f32;
+        let content_scale = (content[..n_clamped]
+            .iter()
+            .map(|x| (x - content_mean).powi(2))
+            .sum::<f32>()
+            / n_clamped as f32)
+            .sqrt()
+            .max(1e-6);
+        let finite_evidence: Vec<f32> = evidence[..n_clamped]
+            .iter()
+            .copied()
+            .filter(|x| x.is_finite())
+            .collect();
+        let evidence_scale = if finite_evidence.is_empty() {
+            1.0
+        } else {
+            (finite_evidence
+                .iter()
+                .map(|x| (x - evidence_mean).powi(2))
+                .sum::<f32>()
+                / finite_evidence.len() as f32)
+                .sqrt()
+                .max(1e-6)
+        };
+        let mut best = 0;
+        let mut best_score = f32::NEG_INFINITY;
+        for k in 0..n_clamped {
+            let score = if evidence[k].is_infinite() {
+                f32::INFINITY
+            } else {
+                (content[k] - content_mean) / content_scale
+                    + (evidence[k] - evidence_mean) / evidence_scale
+            };
+            if score > best_score {
+                best_score = score;
+                best = k;
             }
         }
+        self.neighbors[best]
+    }
 
-        let mut sum_exp = 0.0f32;
-        for k in 0..n_clamped {
-            let e = (logits[k] - max_logit).exp();
-            exps[k] = e;
-            sum_exp += e;
+    pub fn observe_credit(&mut self, selected_neighbor: usize, credit: f32) {
+        self.ensure_edge_credit();
+        if let Some(index) = self
+            .neighbors
+            .iter()
+            .position(|&id| id == selected_neighbor)
+        {
+            self.edge_credit[index].observe(credit);
         }
+    }
 
-        let mut rng = rand::rng();
-        let p: f32 = rng.random_range(0.0..1.0);
-        let mut cum_sum = 0.0f32;
-        let inv_sum = 1.0 / (sum_exp + 1e-8);
-
-        for k in 0..n_clamped {
-            cum_sum += exps[k] * inv_sum;
-            if p <= cum_sum {
-                return self.neighbors[k];
+    /// Prune only statistically dominated links, never by a user supplied
+    /// magnitude threshold.
+    pub fn prune_dominated_links(&mut self) -> usize {
+        self.ensure_edge_credit();
+        if self.neighbors.len() <= 1 {
+            return 0;
+        }
+        let n = self.neighbors.len();
+        let best_lower = self
+            .edge_credit
+            .iter()
+            .map(OnlineStats::pessimistic_value)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let keep: Vec<usize> = self
+            .edge_credit
+            .iter()
+            .enumerate()
+            .filter_map(|(k, stats)| (stats.optimistic_value() >= best_lower).then_some(k))
+            .collect();
+        if keep.len() == n {
+            return 0;
+        }
+        let mut weights = vec![0.0; self.d_head * keep.len()];
+        for d in 0..self.d_head {
+            for (new_k, &old_k) in keep.iter().enumerate() {
+                weights[d * keep.len() + new_k] = self.weights[d * n + old_k];
             }
         }
-
-        self.neighbors[0]
+        let pruned = n - keep.len();
+        let new_neighbors: Vec<usize> = keep.iter().map(|&k| self.neighbors[k]).collect();
+        let new_credit: Vec<OnlineStats> = keep.iter().map(|&k| self.edge_credit[k]).collect();
+        self.neighbors = new_neighbors;
+        self.weights = weights;
+        self.edge_credit = new_credit;
+        pruned
     }
 }
 
@@ -115,7 +197,7 @@ impl TopologyGrid {
             let mut neighbors = Vec::with_capacity(neighbors_per_node);
             for n in 1..=neighbors_per_node {
                 let neighbor_id = (i + n * 7) % num_nodes; // Structured P2P mesh connections
-                if neighbor_id != i {
+                if neighbor_id != i && !neighbors.contains(&neighbor_id) {
                     neighbors.push(neighbor_id);
                 }
             }

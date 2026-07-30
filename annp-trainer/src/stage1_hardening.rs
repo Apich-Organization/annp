@@ -8,40 +8,25 @@ pub struct HardeningResult {
 }
 
 /// Stage 1: Plasticity Hardening, Subnode Neurogenesis Growth & Precision Fine-Tuning.
-pub struct Stage1HardeningTrainer {
-    pub eta_0: f32,
-    pub beta: f32,
-    pub theta: f32,
-}
+pub struct Stage1HardeningTrainer {}
 
 impl Stage1HardeningTrainer {
-    pub fn new(eta_0: f32, beta: f32, theta: f32) -> Self {
-        Self { eta_0, beta, theta }
-    }
-
-    /// Compute node-specific plastic hardening learning rate: \eta_j = \eta_0 / (1 + \beta * S_j)^\theta
-    pub fn compute_node_lr(&self, cumulative_seq_len: u64) -> f32 {
-        let s_j = cumulative_seq_len as f32;
-        self.eta_0 / (1.0 + self.beta * s_j).powf(self.theta)
+    /// Retains the constructor shape for CLI compatibility. Hardening no longer
+    /// uses a global decay curve: topology and subnodes evolve from their local
+    /// empirical credit alone.
+    pub fn new(_eta_0: f32, _beta: f32, _theta: f32) -> Self {
+        Self {}
     }
 
     /// Perform plastic hardening updates and subnode micro-column neurogenesis checking across all nodes
     pub fn apply_plastic_hardening(&self, model: &mut ANNPModel) -> HardeningResult {
-        // 1. Plastic Hardening Scaling for primary subnodes (Direct assignment from alpha_init to prevent geometric compound decay)
-        let alpha_init = model.config.alpha_init;
-        for node in model.nodes.iter_mut() {
-            let node_lr = self.compute_node_lr(node.cumulative_sequence_len);
-            let scaling = node_lr / self.eta_0;
-            if let Some(primary) = node.subnodes.first_mut() {
-                primary.alpha = alpha_init * scaling;
-            }
-        }
-
-        // 2. Subnode Micro-Column Neurogenesis Checking
+        // Subnode growth and link removal are local evidence decisions. There
+        // is deliberately no epoch-wide alpha schedule or global threshold.
         let mut spawn_details = Vec::new();
 
         for i in 0..model.nodes.len() {
             let node = &mut model.nodes[i];
+            node.prune_dominated_subnodes();
             let count_before = node.subnodes.len();
             if node.try_subnode_neurogenesis() {
                 let count_after = node.subnodes.len();
@@ -55,10 +40,16 @@ impl Stage1HardeningTrainer {
             .iter()
             .map(|rt| rt.neighbors.len())
             .sum();
+        let links_pruned = model
+            .topology
+            .routing_tables
+            .iter_mut()
+            .map(|table| table.prune_dominated_links())
+            .sum();
 
         HardeningResult {
             links_before,
-            links_pruned: 0,
+            links_pruned,
             spawn_details,
         }
     }

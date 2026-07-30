@@ -1,4 +1,46 @@
 /// Mathematical metrics for Halting conditions and Attention Entropy evaluation.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct OnlineStats {
+    pub count: u64,
+    pub mean: f32,
+    pub m2: f32,
+}
+
+impl OnlineStats {
+    pub fn observe(&mut self, value: f32) {
+        if !value.is_finite() {
+            return;
+        }
+        self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f32;
+        self.m2 += delta * (value - self.mean);
+    }
+
+    pub fn variance(&self) -> f32 {
+        if self.count > 1 {
+            (self.m2 / (self.count - 1) as f32).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    pub fn standard_error(&self) -> f32 {
+        if self.count > 1 {
+            (self.variance() / self.count as f32).sqrt()
+        } else {
+            f32::INFINITY
+        }
+    }
+
+    pub fn optimistic_value(&self) -> f32 {
+        self.mean + self.standard_error()
+    }
+    pub fn pessimistic_value(&self) -> f32 {
+        self.mean - self.standard_error()
+    }
+}
+
 /// Compute L2 norm difference between input and output particle payloads: ||p_out - p_in||_2
 pub fn compute_delta_p(p_in: &[f32], p_out: &[f32]) -> f32 {
     assert_eq!(

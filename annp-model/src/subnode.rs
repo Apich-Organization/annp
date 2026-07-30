@@ -1,3 +1,4 @@
+use annp_core::OnlineStats;
 use rand::Rng;
 
 #[derive(Debug, Clone)]
@@ -11,6 +12,9 @@ pub struct Subnode {
     pub v_down: Vec<f32>,
     pub alpha: f32,
     pub activation_count: u64,
+    /// Empirical local credit; reset on checkpoint restore because it is an
+    /// online decision aid, not model knowledge.
+    pub credit_stats: OnlineStats,
 }
 
 impl Subnode {
@@ -42,6 +46,7 @@ impl Subnode {
             v_down,
             alpha: alpha_init,
             activation_count: 0,
+            credit_stats: OnlineStats::default(),
         }
     }
 
@@ -79,6 +84,7 @@ impl Subnode {
             v_down,
             alpha: parent.alpha,
             activation_count: 0,
+            credit_stats: OnlineStats::default(),
         }
     }
 }

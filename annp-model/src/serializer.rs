@@ -11,6 +11,10 @@ pub struct EgressSerializer {
     pub w_egress: Vec<f32>,       // Flat [d_model * d_model]
     pub v_egress: Vec<f32>,       // Momentum velocity buffer
     pub last_full_data: Vec<f32>, // Cached reconstructed input features for exact matrix gradient
+    /// Pre-normalization egress activations.  The network's public representation
+    /// is RMS bounded, so this cache is required to apply the corresponding
+    /// Jacobian during training.
+    pub last_projected_data: Vec<f32>,
 }
 
 impl EgressSerializer {
@@ -38,6 +42,7 @@ impl EgressSerializer {
             w_egress,
             v_egress,
             last_full_data,
+            last_projected_data: Vec::new(),
         }
     }
 
@@ -75,28 +80,101 @@ impl EgressSerializer {
             for i in 0..d_model {
                 let mut sum = 0.0f32;
                 for j in 0..d_model {
+                    if j / self.d_head != i / self.d_head {
+                        continue;
+                    }
                     sum += full_data[t * d_model + j] * self.w_egress[j * d_model + i];
                 }
                 proj_data[t * d_model + i] = sum;
             }
         }
 
+        // A particle may legitimately traverse many micro-blocks before its
+        // energy expires.  MicroRMSNorm bounds each *residual update*, not the
+        // accumulated particle state.  The prediction space must therefore be
+        // bounded explicitly: dataset embeddings are unit-RMS and the initial
+        // MSE of two unrelated unit-RMS vectors is approximately 2.
+        self.last_projected_data = proj_data.clone();
+        for row in proj_data.chunks_exact_mut(d_model) {
+            let rms = (row.iter().map(|x| x * x).sum::<f32>() / d_model as f32 + 1e-8).sqrt();
+            for value in row {
+                *value /= rms;
+            }
+        }
+
         Tensor::from_vec(proj_data, (seq_len, d_model), device)
+    }
+
+    /// Backpropagate a gradient through the per-token RMS projection performed
+    /// by `reconstruct_sequence`. `output_gradient` has the same shape as the
+    /// serialized output and is returned as a gradient for the dense projection.
+    pub fn backprop_output_rms(&self, output_gradient: &[f32]) -> Vec<f32> {
+        let d_model = self.d_head * self.num_shards;
+        if d_model == 0
+            || output_gradient.len() != self.last_projected_data.len()
+            || output_gradient.len() % d_model != 0
+        {
+            return Vec::new();
+        }
+
+        let mut projected_gradient = vec![0.0; output_gradient.len()];
+        for ((z_row, grad_row), out_row) in self
+            .last_projected_data
+            .chunks_exact(d_model)
+            .zip(output_gradient.chunks_exact(d_model))
+            .zip(projected_gradient.chunks_exact_mut(d_model))
+        {
+            let rms = (z_row.iter().map(|x| x * x).sum::<f32>() / d_model as f32 + 1e-8).sqrt();
+            let dot_over_dim = z_row
+                .iter()
+                .zip(grad_row)
+                .map(|(z, grad)| z * grad)
+                .sum::<f32>()
+                / d_model as f32;
+            for ((out, &grad), &z) in out_row.iter_mut().zip(grad_row).zip(z_row) {
+                *out = (grad - z * dot_over_dim / (rms * rms)) / rms;
+            }
+        }
+        projected_gradient
+    }
+
+    /// Propagate a dense-projection gradient to the reconstructed particle
+    /// features: dL/dX = dL/dZ * W_egress^T.
+    pub fn input_gradient(&self, projected_gradient: &[f32]) -> Vec<f32> {
+        let d_model = self.d_head * self.num_shards;
+        if d_model == 0 || projected_gradient.len() % d_model != 0 {
+            return Vec::new();
+        }
+
+        let mut input_gradient = vec![0.0; projected_gradient.len()];
+        for (grad_row, input_row) in projected_gradient
+            .chunks_exact(d_model)
+            .zip(input_gradient.chunks_exact_mut(d_model))
+        {
+            for j in 0..d_model {
+                let mut sum = 0.0;
+                for i in 0..d_model {
+                    sum += grad_row[i] * self.w_egress[j * d_model + i];
+                }
+                input_row[j] = sum;
+            }
+        }
+        input_gradient
     }
 
     /// Update W_egress matrix using exact X^T * diff matrix product
     pub fn update_weights(&mut self, diff_matrix: &[f32], lr: f32) {
         let d_model = self.d_head * self.num_shards;
-        if diff_matrix.len() < d_model || self.last_full_data.is_empty() {
+        if diff_matrix.len() != self.last_full_data.len() || self.last_full_data.is_empty() {
             return;
         }
 
         let seq_len = self.last_full_data.len() / d_model;
-        let beta = 0.9f32;
-        let weight_decay = 0.9999f32;
-
         for j in 0..d_model {
             for i in 0..d_model {
+                if j / self.d_head != i / self.d_head {
+                    continue;
+                }
                 let idx = j * d_model + i;
                 let mut grad = 0.0f32;
                 for t in 0..seq_len {
@@ -106,9 +184,11 @@ impl EgressSerializer {
                 }
                 grad /= (seq_len as f32) * (d_model as f32);
 
-                self.v_egress[idx] = beta * self.v_egress[idx] + (1.0 - beta) * grad;
-                self.w_egress[idx] = self.w_egress[idx] * weight_decay
-                    - lr * self.v_egress[idx].clamp(-0.001, 0.001);
+                // `grad` is already the mean MSE gradient. Applying it
+                // directly keeps the configured learning rate meaningful;
+                // momentum, weight decay and a fixed clamp previously reduced
+                // an initial update to noise-level magnitude.
+                self.w_egress[idx] -= lr * grad;
             }
         }
     }

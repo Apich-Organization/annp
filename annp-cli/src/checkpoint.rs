@@ -1,4 +1,4 @@
-use annp_core::MicroBlockConfig;
+use annp_core::{MicroBlockConfig, OnlineStats};
 use annp_model::{ANNPModel, RoutingTable, Subnode};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -365,6 +365,7 @@ impl ModelCheckpoint {
                 d_head,
                 neighbors,
                 weights,
+                edge_credit: Vec::new(),
             });
         }
 
@@ -401,6 +402,7 @@ impl ModelCheckpoint {
                         v_down: vec![0.0f32; s.w_down.len()],
                         alpha: s.alpha,
                         activation_count: s.activation_count,
+                        credit_stats: OnlineStats::default(),
                     })
                     .collect();
             }
