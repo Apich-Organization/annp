@@ -360,7 +360,23 @@ impl CudaMicroBlockRunner {
                 let mut s_mid = [0.0f32; MAX_D_HEAD];
                 let mut ffn_inter = [0.0f32; MAX_FFN_DIM];
 
-                // 1. Full KV-Attention Dot Product
+                // 1. Pre-RMSNorm for Attention
+                let mut curr_p_normed = [0.0f32; MAX_D_HEAD];
+                let mut sq_sum_attn_v = _mm256_setzero_ps();
+                for d in (0..d_head).step_by(8) {
+                    let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
+                    sq_sum_attn_v = _mm256_fmadd_ps(p_v, p_v, sq_sum_attn_v);
+                }
+                let sq_sum_attn = hsum_avx2(sq_sum_attn_v);
+                let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + 1e-8).sqrt();
+                let inv_rms_attn_v = _mm256_set1_ps(inv_rms_attn);
+                for d in (0..d_head).step_by(8) {
+                    let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
+                    let normed = _mm256_mul_ps(p_v, inv_rms_attn_v);
+                    _mm256_storeu_ps(curr_p_normed.as_mut_ptr().add(d), normed);
+                }
+
+                // 1.5 Full KV-Attention Dot Product
                 if kv_len > 0 {
                     let mut scores = vec![0.0f32; kv_len];
                     let mut max_score = -1e9f32;
@@ -370,7 +386,7 @@ impl CudaMicroBlockRunner {
                         let mut acc_v = _mm256_setzero_ps();
 
                         for d in (0..d_head).step_by(8) {
-                            let p_vec = _mm256_loadu_ps(curr_p.as_ptr().add(d));
+                            let p_vec = _mm256_loadu_ps(curr_p_normed.as_ptr().add(d));
                             let k_vec = _mm256_loadu_ps(k_slice.as_ptr().add(d));
                             acc_v = _mm256_fmadd_ps(p_vec, k_vec, acc_v);
                         }
@@ -404,53 +420,37 @@ impl CudaMicroBlockRunner {
                     }
                 }
 
-                // 2. Norm 1
-                if norm_strategy == 0 {
-                    // MicroRMSNorm
-                    let mut sq_acc = _mm256_setzero_ps();
-                    for d in (0..d_head).step_by(8) {
-                        let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
-                        sq_acc = _mm256_fmadd_ps(a_v, a_v, sq_acc);
-                    }
-                    let sq = hsum_avx2(sq_acc);
-                    let rms = (sq / (d_head as f32) + 1e-8).sqrt();
-                    let alpha_inv_rms = alpha / rms;
-                    let alpha_vec = _mm256_set1_ps(alpha_inv_rms);
-
-                    for d in (0..d_head).step_by(8) {
-                        let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
-                        let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
-                        let res = _mm256_fmadd_ps(a_v, alpha_vec, p_v);
-                        _mm256_storeu_ps(s_mid.as_mut_ptr().add(d), res);
-                    }
-                } else {
-                    // SphereNormalization
-                    let mut sum_sq_acc = _mm256_setzero_ps();
-                    for d in (0..d_head).step_by(8) {
-                        let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
-                        let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
-                        let m_v = _mm256_add_ps(p_v, a_v);
-                        _mm256_storeu_ps(s_mid.as_mut_ptr().add(d), m_v);
-                        sum_sq_acc = _mm256_fmadd_ps(m_v, m_v, sum_sq_acc);
-                    }
-                    let sq_sum = hsum_avx2(sum_sq_acc);
-                    let norm_val = (sq_sum + 1e-8f32).sqrt();
-                    let s_scale = sphere_radius / norm_val;
-                    let s_scale_v = _mm256_set1_ps(s_scale);
-
-                    for d in (0..d_head).step_by(8) {
-                        let m_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
-                        let res = _mm256_mul_ps(m_v, s_scale_v);
-                        _mm256_storeu_ps(s_mid.as_mut_ptr().add(d), res);
-                    }
+                // 2. Norm 1 (Disabled to allow proportional response/silence)
+                let alpha_vec = _mm256_set1_ps(alpha);
+                for d in (0..d_head).step_by(8) {
+                    let p_v = _mm256_loadu_ps(curr_p.as_ptr().add(d));
+                    let a_v = _mm256_loadu_ps(attn_out.as_ptr().add(d));
+                    let res = _mm256_fmadd_ps(a_v, alpha_vec, p_v);
+                    _mm256_storeu_ps(s_mid.as_mut_ptr().add(d), res);
                 }
 
-                // 3. SwiGLU FFN
+                // 3. Pre-RMSNorm for FFN
+                let mut s_mid_normed = [0.0f32; MAX_D_HEAD];
+                let mut sq_sum_ffn_v = _mm256_setzero_ps();
+                for d in (0..d_head).step_by(8) {
+                    let s_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
+                    sq_sum_ffn_v = _mm256_fmadd_ps(s_v, s_v, sq_sum_ffn_v);
+                }
+                let sq_sum_ffn = hsum_avx2(sq_sum_ffn_v);
+                let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
+                let inv_rms_ffn_v = _mm256_set1_ps(inv_rms_ffn);
+                for d in (0..d_head).step_by(8) {
+                    let s_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
+                    let normed = _mm256_mul_ps(s_v, inv_rms_ffn_v);
+                    _mm256_storeu_ps(s_mid_normed.as_mut_ptr().add(d), normed);
+                }
+
+                // 3.5 SwiGLU FFN
                 let mut gate_arr = [0.0f32; MAX_FFN_DIM];
                 let mut up_arr = [0.0f32; MAX_FFN_DIM];
 
                 for d in 0..d_head {
-                    let m_v = _mm256_set1_ps(s_mid[d]);
+                    let m_v = _mm256_set1_ps(s_mid_normed[d]);
                     let d_offset = d * ffn_dim;
 
                     for j in (0..ffn_dim).step_by(8) {
@@ -495,50 +495,17 @@ impl CudaMicroBlockRunner {
                 }
 
 
-                // 5. Norm 2 & Output
+                // 5. Norm 2 & Output (Disabled to allow proportional response/silence)
                 let min_v = _mm256_set1_ps(-100.0);
                 let max_v = _mm256_set1_ps(100.0);
+                let alpha_v = _mm256_set1_ps(alpha);
 
-                if norm_strategy == 0 {
-                    // MicroRMSNorm
-                    let mut sq_acc = _mm256_setzero_ps();
-                    for d in (0..d_head).step_by(8) {
-                        let d_v = _mm256_loadu_ps(down_arr.as_ptr().add(d));
-                        sq_acc = _mm256_fmadd_ps(d_v, d_v, sq_acc);
-                    }
-                    let ffn_sq = hsum_avx2(sq_acc);
-                    let inv_ffn_rms = 1.0 / (ffn_sq / (d_head as f32) + 1e-8f32).sqrt();
-                    let alpha_inv_rms_v = _mm256_set1_ps(alpha * inv_ffn_rms);
-
-                    for d in (0..d_head).step_by(8) {
-                        let s_mid_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
-                        let down_v = _mm256_loadu_ps(down_arr.as_ptr().add(d));
-                        let res = _mm256_fmadd_ps(down_v, alpha_inv_rms_v, s_mid_v);
-                        let clamped = _mm256_min_ps(_mm256_max_ps(res, min_v), max_v);
-                        _mm256_storeu_ps(out_slice.as_mut_ptr().add(d), clamped);
-                    }
-                } else {
-                    // SphereNormalization
-                    let mut sum_sq_acc = _mm256_setzero_ps();
-                    let mut sum_arr = [0.0f32; MAX_D_HEAD];
-                    for d in (0..d_head).step_by(8) {
-                        let s_mid_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
-                        let down_v = _mm256_loadu_ps(down_arr.as_ptr().add(d));
-                        let sum_v = _mm256_add_ps(s_mid_v, down_v);
-                        _mm256_storeu_ps(sum_arr.as_mut_ptr().add(d), sum_v);
-                        sum_sq_acc = _mm256_fmadd_ps(sum_v, sum_v, sum_sq_acc);
-                    }
-                    let sq_sum = hsum_avx2(sum_sq_acc);
-                    let norm_val = (sq_sum + 1e-8f32).sqrt();
-                    let s_scale = sphere_radius / norm_val;
-                    let s_scale_v = _mm256_set1_ps(s_scale);
-
-                    for d in (0..d_head).step_by(8) {
-                        let sum_v = _mm256_loadu_ps(sum_arr.as_ptr().add(d));
-                        let res = _mm256_mul_ps(sum_v, s_scale_v);
-                        let clamped = _mm256_min_ps(_mm256_max_ps(res, min_v), max_v);
-                        _mm256_storeu_ps(out_slice.as_mut_ptr().add(d), clamped);
-                    }
+                for d in (0..d_head).step_by(8) {
+                    let s_mid_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
+                    let down_v = _mm256_loadu_ps(down_arr.as_ptr().add(d));
+                    let res = _mm256_fmadd_ps(down_v, alpha_v, s_mid_v);
+                    let clamped = _mm256_min_ps(_mm256_max_ps(res, min_v), max_v);
+                    _mm256_storeu_ps(out_slice.as_mut_ptr().add(d), clamped);
                 }
             }
 
@@ -569,7 +536,15 @@ impl CudaMicroBlockRunner {
             let curr_p = &p_in[b * d_head..(b + 1) * d_head];
             let out_slice = &mut p_out[b * d_head..(b + 1) * d_head];
 
-            // 1. Attention
+            // 1. Pre-RMSNorm for Attention
+            let mut curr_p_normed = vec![0.0f32; d_head];
+            let sq_sum_attn: f32 = curr_p.iter().map(|&x| x * x).sum();
+            let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + 1e-8).sqrt();
+            for d in 0..d_head {
+                curr_p_normed[d] = curr_p[d] * inv_rms_attn;
+            }
+
+            // 1.5 Attention
             let mut attn_out = vec![0.0f32; d_head];
             if kv_len > 0 && !k_cache.is_empty() && !v_cache.is_empty() {
                 let actual_kv = kv_len
@@ -583,7 +558,7 @@ impl CudaMicroBlockRunner {
                         let k_slice = &k_cache[k * d_head..(k + 1) * d_head];
                         let mut dot = 0.0f32;
                         for d in 0..d_head {
-                            dot += curr_p[d] * k_slice[d];
+                            dot += curr_p_normed[d] * k_slice[d];
                         }
                         let score = dot * scale;
                         scores[k] = score;
@@ -610,38 +585,27 @@ impl CudaMicroBlockRunner {
                 }
             }
 
-            // 2. Norm 1
+            // 2. Norm 1 (Disabled to allow proportional response/silence)
             let mut s_mid = vec![0.0f32; d_head];
-            if norm_strategy == 0 {
-                // MicroRMSNorm
-                let sq_sum: f32 = attn_out.iter().map(|&x| x * x).sum();
-                let rms = (sq_sum / (d_head as f32) + 1e-8).sqrt();
-                let inv_rms = 1.0 / rms;
-                for d in 0..d_head {
-                    s_mid[d] = curr_p[d] + alpha * (attn_out[d] * inv_rms);
-                }
-            } else {
-                // SphereNormalization
-                let mut sum_sq = 0.0f32;
-                for d in 0..d_head {
-                    let v = curr_p[d] + attn_out[d];
-                    s_mid[d] = v;
-                    sum_sq += v * v;
-                }
-                let norm = (sum_sq + 1e-8).sqrt();
-                let s_scale = sphere_radius / norm;
-                for d in 0..d_head {
-                    s_mid[d] *= s_scale;
-                }
+            for d in 0..d_head {
+                s_mid[d] = curr_p[d] + alpha * attn_out[d];
             }
 
-            // 3. SwiGLU FFN
+            // 3. Pre-RMSNorm for FFN
+            let mut s_mid_normed = vec![0.0f32; d_head];
+            let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
+            let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
+            for d in 0..d_head {
+                s_mid_normed[d] = s_mid[d] * inv_rms_ffn;
+            }
+
+            // 3.5 SwiGLU FFN
             let mut ffn_inter = vec![0.0f32; ffn_dim];
             for j in 0..ffn_dim {
                 let mut gate = 0.0f32;
                 let mut up = 0.0f32;
                 for d in 0..d_head {
-                    let m_val = s_mid[d];
+                    let m_val = s_mid_normed[d];
                     gate += m_val * w_gate[d * ffn_dim + j];
                     up += m_val * w_up[d * ffn_dim + j];
                 }
@@ -659,30 +623,10 @@ impl CudaMicroBlockRunner {
             }
 
 
-            // 5. Norm 2 & Output
-            if norm_strategy == 0 {
-                // MicroRMSNorm
-                let ffn_sq: f32 = down_arr.iter().map(|&x| x * x).sum();
-                let inv_ffn_rms = 1.0 / (ffn_sq / (d_head as f32) + 1e-8).sqrt();
-                for d in 0..d_head {
-                    let res = s_mid[d] + alpha * (down_arr[d] * inv_ffn_rms);
-                    out_slice[d] = res.clamp(-100.0, 100.0);
-                }
-            } else {
-                // SphereNormalization
-                let mut sum_sq = 0.0f32;
-                let mut sum_arr = vec![0.0f32; d_head];
-                for d in 0..d_head {
-                    let v = s_mid[d] + down_arr[d];
-                    sum_arr[d] = v;
-                    sum_sq += v * v;
-                }
-                let norm = (sum_sq + 1e-8).sqrt();
-                let s_scale = sphere_radius / norm;
-                for d in 0..d_head {
-                    let res = sum_arr[d] * s_scale;
-                    out_slice[d] = res.clamp(-100.0, 100.0);
-                }
+            // 5. Norm 2 (Disabled to allow proportional response/silence)
+            for d in 0..d_head {
+                let res = s_mid[d] + alpha * down_arr[d];
+                out_slice[d] = res.clamp(-100.0, 100.0);
             }
         }
     }

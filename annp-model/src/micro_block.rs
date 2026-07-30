@@ -351,7 +351,8 @@ impl MicroBlockNode {
         let ffn_dim = d_head * self.config.ffn_expansion;
         let primary = &mut self.subnodes[self.active_subnode];
 
-        let primary = &mut self.subnodes[self.active_subnode];
+        let lr_diluted = lr / (self.config.max_hop as f32);
+        let weight_decay = 1e-4f32;
 
         for (j, (&token_id, &shard_id)) in self.kv_token_ids.iter().zip(self.kv_shard_ids.iter()).enumerate() {
             let offset = (token_id as usize) * d_model + (shard_id as usize) * d_head;
@@ -360,6 +361,13 @@ impl MicroBlockNode {
             }
             let err_slice = &full_grad[offset..offset + d_head];
             let p_in_slice = &self.k_cache[j * d_head..(j + 1) * d_head];
+
+            let mut p_in_normed = vec![0.0f32; d_head];
+            let sq_sum_ffn: f32 = p_in_slice.iter().map(|&x| x * x).sum();
+            let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
+            for d in 0..d_head {
+                p_in_normed[d] = p_in_slice[d] * inv_rms_ffn;
+            }
 
             // 1. Recompute SwiGLU forward pass for exactly this cached state (Gradient Checkpointing)
             let mut ffn_inter = vec![0.0f32; ffn_dim];
@@ -371,7 +379,7 @@ impl MicroBlockNode {
                 let mut gate = 0.0f32;
                 let mut up = 0.0f32;
                 for d in 0..d_head {
-                    let m_val = p_in_slice[d];
+                    let m_val = p_in_normed[d];
                     gate += m_val * primary.w_gate[d * ffn_dim + f];
                     up += m_val * primary.w_up[d * ffn_dim + f];
                 }
@@ -416,24 +424,26 @@ impl MicroBlockNode {
 
             // 3. Weight updates
             let alpha = primary.alpha;
+            let wd_factor = 1.0 - lr_diluted * weight_decay;
+            
             for f in 0..ffn_dim {
                 let inter_val = ffn_inter[f];
                 for d in 0..d_head {
                     let idx = f * d_head + d;
                     let grad = err_slice[d] * inter_val * alpha;
-                    primary.w_down[idx] -= lr * grad;
+                    primary.w_down[idx] = primary.w_down[idx] * wd_factor - lr_diluted * grad;
                 }
             }
 
             for d in 0..d_head {
-                let p_in_val = p_in_slice[d];
+                let p_in_val = p_in_normed[d];
                 for f in 0..ffn_dim {
                     let idx = d * ffn_dim + f;
                     let grad_gate = d_gate_arr[f] * p_in_val * alpha;
                     let grad_up = d_up_arr[f] * p_in_val * alpha;
                     
-                    primary.w_gate[idx] -= lr * grad_gate;
-                    primary.w_up[idx] -= lr * grad_up;
+                    primary.w_gate[idx] = primary.w_gate[idx] * wd_factor - lr_diluted * grad_gate;
+                    primary.w_up[idx] = primary.w_up[idx] * wd_factor - lr_diluted * grad_up;
                 }
             }
         }

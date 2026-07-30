@@ -92,7 +92,7 @@ mod tests {
         let tensor_data = vec![0.5f32; 2 * d_model];
         let input_embeddings = Tensor::from_vec(tensor_data, (2, d_model), &device)?;
 
-        let mut trainer = Stage0WaveTrainer::new(0.02);
+        let mut trainer = Stage0WaveTrainer::new(2.0);
         let loss = trainer.train_step_with_epoch(&mut model, &input_embeddings, 0)?;
         println!("DEBUG_TEST_LOSS = {}", loss);
 

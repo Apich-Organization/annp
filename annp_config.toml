@@ -15,13 +15,13 @@ subnode_max = 8
 [stage0_wave]
 enabled = true
 epochs = 8
-learning_rate = 0.02
+learning_rate = 0.05
 dataset_path = "stage_0_1-32001.json"
 dataset_format = "json"
 
 [stage1_hardening]
 enabled = true
 epochs = 12
-learning_rate = 0.01
+learning_rate = 0.02
 dataset_path = "stage_1_1-32001.json"
 dataset_format = "json"
