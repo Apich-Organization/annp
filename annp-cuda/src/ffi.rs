@@ -66,7 +66,9 @@ unsafe extern "C" {
         d_head: i32,
         ffn_dim: i32,
         kv_len: i32,
+        norm_strategy: i32,
         alpha: f32,
+        sphere_radius: f32,
         stream: *mut c_void,
     );
 
@@ -229,7 +231,9 @@ impl CudaMicroBlockRunner {
                     d_head as i32,
                     ffn_dim as i32,
                     kv_len as i32,
+                    0, // norm_strategy (0 = RMSNorm)
                     alpha,
+                    1.0, // sphere_radius
                     stream_ptr,
                 );
                 return;
