@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 3;
+const ANNPB_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
@@ -16,6 +16,7 @@ pub struct SubnodeCheckpoint {
     pub w_down: Vec<f32>,
     pub alpha: f32,
     pub activation_count: u64,
+    pub credit_stats: OnlineStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +108,10 @@ impl ModelCheckpoint {
                 file.write_all(&(sub.subnode_id as u32).to_le_bytes())?;
                 file.write_all(&sub.alpha.to_le_bytes())?;
                 file.write_all(&sub.activation_count.to_le_bytes())?;
+
+                file.write_all(&sub.credit_stats.count.to_le_bytes())?;
+                file.write_all(&sub.credit_stats.mean.to_le_bytes())?;
+                file.write_all(&sub.credit_stats.m2.to_le_bytes())?;
 
                 let gate_bytes = unsafe {
                     std::slice::from_raw_parts(
@@ -212,6 +217,16 @@ impl ModelCheckpoint {
                     file.read_exact(&mut buf8)?;
                     let sub_act_count = u64::from_le_bytes(buf8);
 
+                    let mut credit_stats = OnlineStats::default();
+                    if version >= 4 {
+                        file.read_exact(&mut buf8)?;
+                        credit_stats.count = u64::from_le_bytes(buf8);
+                        file.read_exact(&mut buf4)?;
+                        credit_stats.mean = f32::from_le_bytes(buf4);
+                        file.read_exact(&mut buf4)?;
+                        credit_stats.m2 = f32::from_le_bytes(buf4);
+                    }
+
                     // Read W_gate
                     file.read_exact(&mut buf4)?;
                     let gate_len = u32::from_le_bytes(buf4) as usize;
@@ -246,6 +261,7 @@ impl ModelCheckpoint {
                         w_down,
                         alpha,
                         activation_count: sub_act_count,
+                        credit_stats,
                     });
                 }
 
@@ -310,6 +326,7 @@ impl ModelCheckpoint {
                     w_down,
                     alpha,
                     activation_count,
+                    credit_stats: OnlineStats::default(),
                 };
 
                 nodes.push(NodeCheckpoint {
@@ -386,7 +403,7 @@ impl ModelCheckpoint {
                             v_down: vec![0.0f32; s.w_down.len()],
                             alpha: s.alpha,
                             activation_count: s.activation_count,
-                            credit_stats: OnlineStats::default(),
+                            credit_stats: s.credit_stats,
                             d_weights: None,
                         };
                         if use_cuda {
@@ -431,6 +448,7 @@ impl ModelCheckpoint {
                         w_down: s.w_down.clone(),
                         alpha: s.alpha,
                         activation_count: s.activation_count,
+                        credit_stats: s.credit_stats,
                     })
                     .collect(),
             })

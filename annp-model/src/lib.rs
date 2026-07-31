@@ -9,3 +9,6 @@ pub use model::ANNPModel;
 pub use scattering::TokenScattering;
 pub use subnode::Subnode;
 pub use topology::{RoutingTable, TopologyGrid};
+
+#[cfg(test)]
+pub mod tests;

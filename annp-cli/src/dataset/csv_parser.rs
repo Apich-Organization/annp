@@ -69,3 +69,62 @@ pub fn load_csv_dataset<P: AsRef<Path>>(
 
     Ok(tensors)
 }
+
+pub fn split_and_cache_dataset<P: AsRef<Path>>(
+    path: P,
+    chunk_size: usize,
+) -> Result<(Vec<std::path::PathBuf>, usize)> {
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    let tmp_dir = PathBuf::from("tmp").join("annp_chunks");
+    let _ = fs::create_dir_all(&tmp_dir);
+
+    let p = path.as_ref();
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(p)
+        .map_err(|e| candle_core::Error::Msg(format!("CSV Open error: {}", e)))?;
+
+    let headers = reader.headers().unwrap().clone();
+
+    let mut chunk_paths = Vec::new();
+    let mut current_chunk = Vec::new();
+    let mut chunk_idx = 0;
+    let mut total_count = 0;
+
+    let mut flush_chunk = |records: &mut Vec<csv::StringRecord>| -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let chunk_path = tmp_dir.join(format!(
+            "{}_chunk_{}.csv",
+            p.file_name().unwrap().to_string_lossy(),
+            chunk_idx
+        ));
+        let mut wtr = csv::Writer::from_path(&chunk_path).unwrap();
+        wtr.write_record(&headers).unwrap();
+        for rec in records.iter() {
+            wtr.write_record(rec).unwrap();
+        }
+        wtr.flush().unwrap();
+        chunk_paths.push(chunk_path);
+        chunk_idx += 1;
+        records.clear();
+        Ok(())
+    };
+
+    for result in reader.records() {
+        if let Ok(record) = result {
+            current_chunk.push(record);
+            total_count += 1;
+            if current_chunk.len() >= chunk_size {
+                flush_chunk(&mut current_chunk)?;
+            }
+        }
+    }
+    flush_chunk(&mut current_chunk)?;
+
+    Ok((chunk_paths, total_count))
+}

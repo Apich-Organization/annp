@@ -74,6 +74,22 @@ pub enum DatasetStream {
         d_model: usize,
         device: Device,
     },
+    ChunkedCsv {
+        chunk_paths: Vec<PathBuf>,
+        current_chunk_idx: usize,
+        current_tensors: Vec<Tensor>,
+        cursor: usize,
+        d_model: usize,
+        device: Device,
+    },
+    ChunkedSqlite {
+        chunk_paths: Vec<PathBuf>,
+        current_chunk_idx: usize,
+        current_tensors: Vec<Tensor>,
+        cursor: usize,
+        d_model: usize,
+        device: Device,
+    },
     Buffered {
         batches: Vec<Tensor>,
         cursor: usize,
@@ -89,8 +105,35 @@ impl DatasetStream {
     ) -> Result<Self> {
         let p = path.as_ref();
         if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
-            if let Ok((chunk_paths, _total_count)) = json_parser::split_and_cache_dataset(p, 200) {
+            if let Ok((chunk_paths, _total_count)) = json_parser::split_and_cache_dataset(p, 8192) {
                 let mut stream = Self::ChunkedJson {
+                    chunk_paths,
+                    current_chunk_idx: 0,
+                    current_tensors: Vec::new(),
+                    cursor: 0,
+                    d_model,
+                    device: device.clone(),
+                };
+                let _ = stream.load_next_chunk()?;
+                return Ok(stream);
+            }
+        } else if matches!(format, DatasetFormat::Csv) && p.exists() {
+            if let Ok((chunk_paths, _total_count)) = csv_parser::split_and_cache_dataset(p, 8192) {
+                let mut stream = Self::ChunkedCsv {
+                    chunk_paths,
+                    current_chunk_idx: 0,
+                    current_tensors: Vec::new(),
+                    cursor: 0,
+                    d_model,
+                    device: device.clone(),
+                };
+                let _ = stream.load_next_chunk()?;
+                return Ok(stream);
+            }
+        } else if matches!(format, DatasetFormat::Sqlite) && p.exists() {
+            if let Ok((chunk_paths, _total_count)) = sqlite_parser::split_and_cache_dataset(p, 8192)
+            {
+                let mut stream = Self::ChunkedSqlite {
                     chunk_paths,
                     current_chunk_idx: 0,
                     current_tensors: Vec::new(),
@@ -108,28 +151,60 @@ impl DatasetStream {
     }
 
     fn load_next_chunk(&mut self) -> Result<bool> {
-        if let Self::ChunkedJson {
-            chunk_paths,
-            current_chunk_idx,
-            current_tensors,
-            cursor,
-            d_model,
-            device,
-            ..
-        } = self
-        {
-            if *current_chunk_idx >= chunk_paths.len() {
-                return Ok(false);
+        match self {
+            Self::ChunkedJson {
+                chunk_paths,
+                current_chunk_idx,
+                current_tensors,
+                cursor,
+                d_model,
+                device,
+            } => {
+                if *current_chunk_idx >= chunk_paths.len() {
+                    return Ok(false);
+                }
+                let chunk_path = &chunk_paths[*current_chunk_idx];
+                *current_tensors =
+                    json_parser::load_json_or_jsonl_dataset(chunk_path, true, *d_model, device)?;
+                *cursor = 0;
+                *current_chunk_idx += 1;
+                Ok(true)
             }
-            let chunk_path = &chunk_paths[*current_chunk_idx];
-            let tensors =
-                json_parser::load_json_or_jsonl_dataset(chunk_path, true, *d_model, device)?;
-            *current_tensors = tensors;
-            *cursor = 0;
-            *current_chunk_idx += 1;
-            Ok(true)
-        } else {
-            Ok(false)
+            Self::ChunkedCsv {
+                chunk_paths,
+                current_chunk_idx,
+                current_tensors,
+                cursor,
+                d_model,
+                device,
+            } => {
+                if *current_chunk_idx >= chunk_paths.len() {
+                    return Ok(false);
+                }
+                let chunk_path = &chunk_paths[*current_chunk_idx];
+                *current_tensors = csv_parser::load_csv_dataset(chunk_path, *d_model, device)?;
+                *cursor = 0;
+                *current_chunk_idx += 1;
+                Ok(true)
+            }
+            Self::ChunkedSqlite {
+                chunk_paths,
+                current_chunk_idx,
+                current_tensors,
+                cursor,
+                d_model,
+                device,
+            } => {
+                if *current_chunk_idx >= chunk_paths.len() {
+                    return Ok(false);
+                }
+                let chunk_path = &chunk_paths[*current_chunk_idx];
+                *current_tensors = sqlite_parser::load_sqlite_chunk(chunk_path, *d_model, device)?;
+                *cursor = 0;
+                *current_chunk_idx += 1;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 }
@@ -140,6 +215,16 @@ impl Iterator for DatasetStream {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::ChunkedJson {
+                cursor,
+                current_tensors,
+                ..
+            }
+            | Self::ChunkedCsv {
+                cursor,
+                current_tensors,
+                ..
+            }
+            | Self::ChunkedSqlite {
                 cursor,
                 current_tensors,
                 ..
@@ -161,17 +246,29 @@ impl Iterator for DatasetStream {
         }
 
         if let Ok(true) = self.load_next_chunk() {
-            if let Self::ChunkedJson {
-                cursor,
-                current_tensors,
-                ..
-            } = self
-            {
-                if *cursor < current_tensors.len() {
-                    let tensor = current_tensors[*cursor].clone();
-                    *cursor += 1;
-                    return Some(Ok(tensor));
+            match self {
+                Self::ChunkedJson {
+                    cursor,
+                    current_tensors,
+                    ..
                 }
+                | Self::ChunkedCsv {
+                    cursor,
+                    current_tensors,
+                    ..
+                }
+                | Self::ChunkedSqlite {
+                    cursor,
+                    current_tensors,
+                    ..
+                } => {
+                    if *cursor < current_tensors.len() {
+                        let tensor = current_tensors[*cursor].clone();
+                        *cursor += 1;
+                        return Some(Ok(tensor));
+                    }
+                }
+                _ => {}
             }
         }
 

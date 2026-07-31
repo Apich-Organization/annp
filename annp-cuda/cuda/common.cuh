@@ -51,25 +51,28 @@ static_assert(sizeof(ParticleCudaHeader) == 16, "ParticleCudaHeader size must be
 
 // Warp reduction primitives
 __device__ inline float warp_reduce_sum(float val) {
+    unsigned int mask = __activemask();
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        val += __shfl_down_sync(FULL_WARP_MASK, val, offset);
+        val += __shfl_down_sync(mask, val, offset);
     }
     return val;
 }
 
 __device__ inline float warp_reduce_max(float val) {
+    unsigned int mask = __activemask();
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        val = fmaxf(val, __shfl_down_sync(FULL_WARP_MASK, val, offset));
+        val = fmaxf(val, __shfl_down_sync(mask, val, offset));
     }
     return val;
 }
 
 __device__ inline int warp_reduce_max_int(int val) {
+    unsigned int mask = __activemask();
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        val = max(val, __shfl_down_sync(FULL_WARP_MASK, val, offset));
+        val = max(val, __shfl_down_sync(mask, val, offset));
     }
     return val;
 }

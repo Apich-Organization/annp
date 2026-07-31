@@ -8,9 +8,10 @@ __device__ inline float block_reduce_sum(float val, float* s_reduce) {
     int wid = tid >> 5;
 
     // 1. Intra-warp reduction
+    unsigned int mask = __activemask();
     #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        val += __shfl_down_sync(FULL_WARP_MASK, val, offset);
+        val += __shfl_down_sync(mask, val, offset);
     }
 
     // Write warp sums to shared memory
@@ -24,9 +25,10 @@ __device__ inline float block_reduce_sum(float val, float* s_reduce) {
     val = (tid < num_warps) ? s_reduce[tid] : 0.0f;
 
     if (wid == 0) {
+        unsigned int mask = __activemask();
         #pragma unroll
         for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-            val += __shfl_down_sync(FULL_WARP_MASK, val, offset);
+            val += __shfl_down_sync(mask, val, offset);
         }
     }
 

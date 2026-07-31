@@ -169,9 +169,11 @@ extern "C" __global__ void particle_router_kernel(
     float w_entropy = warp_reduce_sum(local_entropy);
 
     // Correct Warp-Level Parallel Argmax Reduction with Active Thread Masking
+    unsigned int mask = __activemask();
+    #pragma unroll
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
-        float other_max = __shfl_down_sync(FULL_WARP_MASK, local_gumbel_max, offset);
-        int other_k = __shfl_down_sync(FULL_WARP_MASK, local_best_k, offset);
+        float other_max = __shfl_down_sync(mask, local_gumbel_max, offset);
+        int other_k = __shfl_down_sync(mask, local_best_k, offset);
         if (other_max > local_gumbel_max) {
             local_gumbel_max = other_max;
             local_best_k = other_k;
