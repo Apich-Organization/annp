@@ -24,17 +24,15 @@ fn parse_spm_vocab(buf: &[u8]) -> Option<(HashMap<String, u32>, Vec<String>)> {
         if buf[i] == 0x0A && buf[i + 1] < 32 {
             let len = buf[i + 1] as usize;
             let slice = &buf[i + 2..i + 2 + len];
-            if let Ok(s) = std::str::from_utf8(slice) {
-                if s.len() > 0
-                    && s.chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == '\u{2581}')
-                {
-                    if !vocab.contains_key(s) {
-                        let id = inv_vocab.len() as u32;
-                        vocab.insert(s.to_string(), id);
-                        inv_vocab.push(s.to_string());
-                    }
-                }
+            if let Ok(s) = std::str::from_utf8(slice)
+                && !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '\u{2581}')
+                && !vocab.contains_key(s)
+            {
+                let id = inv_vocab.len() as u32;
+                vocab.insert(s.to_string(), id);
+                inv_vocab.push(s.to_string());
             }
         }
     }
@@ -50,49 +48,48 @@ impl AnnpTokenizer {
         let p = path.as_ref();
 
         // 1. Try HF Tokenizer JSON directly
-        if p.exists() {
-            if let Ok(t) = Tokenizer::from_file(p) {
-                println!(
-                    "Successfully loaded Hugging Face JSON Tokenizer from: {:?}",
-                    p
-                );
-                return Self {
-                    inner: Some(t),
-                    spm_vocab: None,
-                };
-            }
+        if p.exists()
+            && let Ok(t) = Tokenizer::from_file(p)
+        {
+            println!(
+                "Successfully loaded Hugging Face JSON Tokenizer from: {:?}",
+                p
+            );
+            return Self {
+                inner: Some(t),
+                spm_vocab: None,
+            };
         }
 
         // 2. Try tokenizer.json if specified file is tokenizer.model
         let json_path = p.with_extension("json");
-        if json_path.exists() {
-            if let Ok(t) = Tokenizer::from_file(&json_path) {
-                println!(
-                    "Successfully loaded Hugging Face JSON Tokenizer from: {:?}",
-                    json_path
-                );
-                return Self {
-                    inner: Some(t),
-                    spm_vocab: None,
-                };
-            }
+        if json_path.exists()
+            && let Ok(t) = Tokenizer::from_file(&json_path)
+        {
+            println!(
+                "Successfully loaded Hugging Face JSON Tokenizer from: {:?}",
+                json_path
+            );
+            return Self {
+                inner: Some(t),
+                spm_vocab: None,
+            };
         }
 
         // 3. Try Native SentencePiece Protobuf binary parser
-        if p.exists() {
-            if let Ok(buf) = fs::read(p) {
-                if let Some((vocab, inv_vocab)) = parse_spm_vocab(&buf) {
-                    println!(
-                        "Successfully loaded SentencePiece Binary Model from: {:?} (Vocabulary Size: {} tokens)",
-                        p,
-                        inv_vocab.len()
-                    );
-                    return Self {
-                        inner: None,
-                        spm_vocab: Some((vocab, inv_vocab)),
-                    };
-                }
-            }
+        if p.exists()
+            && let Ok(buf) = fs::read(p)
+            && let Some((vocab, inv_vocab)) = parse_spm_vocab(&buf)
+        {
+            println!(
+                "Successfully loaded SentencePiece Binary Model from: {:?} (Vocabulary Size: {} tokens)",
+                p,
+                inv_vocab.len()
+            );
+            return Self {
+                inner: None,
+                spm_vocab: Some((vocab, inv_vocab)),
+            };
         }
 
         println!(

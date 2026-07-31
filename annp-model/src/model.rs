@@ -154,7 +154,7 @@ impl ANNPModel {
                 std::mem::swap(&mut curr_batches[node_id], &mut self.node_queues[node_id]);
             }
 
-            let use_cuda_mode = self.nodes.first().map_or(false, |n| n.use_cuda);
+            let use_cuda_mode = self.nodes.first().is_some_and(|n| n.use_cuda);
 
             if use_cuda_mode {
                 // GPU Mode: Execute active nodes on CUDA GPU stream without CPU multi-threading contention

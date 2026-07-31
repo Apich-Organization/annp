@@ -130,20 +130,20 @@ impl DatasetStream {
                 let _ = stream.load_next_chunk()?;
                 return Ok(stream);
             }
-        } else if matches!(format, DatasetFormat::Sqlite) && p.exists() {
-            if let Ok((chunk_paths, _total_count)) = sqlite_parser::split_and_cache_dataset(p, 8192)
-            {
-                let mut stream = Self::ChunkedSqlite {
-                    chunk_paths,
-                    current_chunk_idx: 0,
-                    current_tensors: Vec::new(),
-                    cursor: 0,
-                    d_model,
-                    device: device.clone(),
-                };
-                let _ = stream.load_next_chunk()?;
-                return Ok(stream);
-            }
+        } else if matches!(format, DatasetFormat::Sqlite)
+            && p.exists()
+            && let Ok((chunk_paths, _total_count)) = sqlite_parser::split_and_cache_dataset(p, 8192)
+        {
+            let mut stream = Self::ChunkedSqlite {
+                chunk_paths,
+                current_chunk_idx: 0,
+                current_tensors: Vec::new(),
+                cursor: 0,
+                d_model,
+                device: device.clone(),
+            };
+            let _ = stream.load_next_chunk()?;
+            return Ok(stream);
         }
 
         let batches = load_dataset(path, format, d_model, device)?;
@@ -261,12 +261,10 @@ impl Iterator for DatasetStream {
                     cursor,
                     current_tensors,
                     ..
-                } => {
-                    if *cursor < current_tensors.len() {
-                        let tensor = current_tensors[*cursor].clone();
-                        *cursor += 1;
-                        return Some(Ok(tensor));
-                    }
+                } if *cursor < current_tensors.len() => {
+                    let tensor = current_tensors[*cursor].clone();
+                    *cursor += 1;
+                    return Some(Ok(tensor));
                 }
                 _ => {}
             }
@@ -396,7 +394,7 @@ pub fn generate_synthetic_pattern_tensors(d_model: usize, device: &Device) -> Re
                     }
                     1 => {
                         // Long-Range Associative Memory Retrieval (Step t=48 echoes Key from t=4)
-                        if t >= 48 && t <= 52 {
+                        if (48..=52).contains(&t) {
                             let decay = (-((t as i32 - 48) as f32 * 0.5)).exp();
                             prev_memory_key[d] * decay + 0.1 * (t_norm + d_val).sin()
                         } else {
@@ -413,7 +411,7 @@ pub fn generate_synthetic_pattern_tensors(d_model: usize, device: &Device) -> Re
                     _ => {
                         // Zipfian Non-Linear Burst with Dynamic Phase Drift
                         let zipf_factor = 1.0 / (1.0 + (d as f32 * 0.05));
-                        let carrier = (t_norm * 1.5 + d_norm * 6.28).sin();
+                        let carrier = (t_norm * 1.5 + d_norm * std::f32::consts::TAU).sin();
                         let tanh_mod = (carrier * 2.0).tanh();
                         tanh_mod * zipf_factor * 1.8
                     }

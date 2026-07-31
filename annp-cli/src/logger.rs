@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 pub struct AnnpLogger {
     file_writer: Option<Mutex<File>>,
+    csv_writer: Option<Mutex<File>>,
     log_file_path: Option<PathBuf>,
 }
 
@@ -30,7 +31,6 @@ impl AnnpLogger {
 
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(&file_path)
             .map_err(|e| {
@@ -38,6 +38,32 @@ impl AnnpLogger {
                 e
             })
             .ok();
+
+        let csv_file_path = file_path.with_extension("csv");
+        let mut csv_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&csv_file_path)
+            .map_err(|e| {
+                eprintln!(
+                    "Warning: Failed to open CSV log file {:?}: {}",
+                    csv_file_path, e
+                );
+                e
+            })
+            .ok();
+
+        if let Some(ref mut csv) = csv_file {
+            // Write CSV header if the file is newly created or empty
+            if let Ok(metadata) = csv.metadata()
+                && metadata.len() == 0
+            {
+                let _ = writeln!(
+                    csv,
+                    "timestamp,epoch,batch,step_loss,ema_loss,early_halting_rate,gini,avg_hops,avg_energy,attention_entropy,active_subnodes,credit_volatility,temporal_affinity"
+                );
+            }
+        }
 
         if file.is_some() {
             println!(
@@ -48,6 +74,7 @@ impl AnnpLogger {
 
         Self {
             file_writer: file.map(Mutex::new),
+            csv_writer: csv_file.map(Mutex::new),
             log_file_path: Some(file_path),
         }
     }
@@ -64,11 +91,11 @@ impl AnnpLogger {
         print!("{}", formatted);
 
         // Write to log file if available
-        if let Some(ref writer_mutex) = self.file_writer {
-            if let Ok(mut file) = writer_mutex.lock() {
-                let _ = file.write_all(formatted.as_bytes());
-                let _ = file.flush();
-            }
+        if let Some(ref writer_mutex) = self.file_writer
+            && let Ok(mut file) = writer_mutex.lock()
+        {
+            let _ = file.write_all(formatted.as_bytes());
+            let _ = file.flush();
         }
     }
 
@@ -93,6 +120,29 @@ impl AnnpLogger {
             metrics.avg_hop_count
         );
         self.log("TRAIN_STEP", &msg);
+
+        if let Some(ref csv_mutex) = self.csv_writer
+            && let Ok(mut csv) = csv_mutex.lock()
+        {
+            let timestamp = chrono_timestamp();
+            let _ = writeln!(
+                csv,
+                "{},{},{},{:.6},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                timestamp,
+                epoch,
+                batch_idx,
+                step_loss,
+                rolling_loss,
+                metrics.early_halting_rate,
+                metrics.utilization_gini,
+                metrics.avg_hop_count,
+                metrics.avg_signal_energy,
+                metrics.avg_attention_entropy,
+                metrics.avg_subnodes,
+                metrics.avg_credit_volatility,
+                metrics.avg_temporal_affinity
+            );
+        }
     }
 
     pub fn log_epoch_summary(

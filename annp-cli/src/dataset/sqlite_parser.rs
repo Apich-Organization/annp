@@ -148,10 +148,10 @@ pub fn load_sqlite_chunk<P: AsRef<Path>>(
     if let Ok(file) = File::open(path) {
         let reader = BufReader::new(file);
         for line in reader.lines() {
-            if let Ok(l) = line {
-                if let Ok(t) = tokenizer.encode_to_tensor(&l, d_model, device) {
-                    tensors.push(t);
-                }
+            if let Ok(l) = line
+                && let Ok(t) = tokenizer.encode_to_tensor(&l, d_model, device)
+            {
+                tensors.push(t);
             }
         }
     }

@@ -31,7 +31,7 @@ impl Clone for Subnode {
             v_down: self.v_down.clone(),
             alpha: self.alpha,
             activation_count: self.activation_count,
-            credit_stats: self.credit_stats.clone(),
+            credit_stats: self.credit_stats,
             d_weights: None, // Will be initialized by the model
         }
     }

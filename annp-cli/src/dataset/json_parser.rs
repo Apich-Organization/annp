@@ -132,33 +132,31 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
     let mut all_values = Vec::new();
 
     // 1. Try reading whole JSON file (handles multiline JSON array, pretty JSON, or single object)
-    if let Ok(file) = File::open(p) {
-        if let Ok(v) = serde_json::from_reader::<_, Value>(BufReader::new(file)) {
-            if let Some(arr) = v.as_array() {
-                all_values = arr.clone();
-            } else {
-                all_values.push(v);
-            }
+    if let Ok(file) = File::open(p)
+        && let Ok(v) = serde_json::from_reader::<_, Value>(BufReader::new(file))
+    {
+        if let Some(arr) = v.as_array() {
+            all_values = arr.clone();
+        } else {
+            all_values.push(v);
         }
     }
 
     // 2. Fallback: line-by-line JSONL format
-    if all_values.is_empty() {
-        if let Ok(file) = File::open(p) {
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    let trimmed = l.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                        if let Some(arr) = v.as_array() {
-                            all_values.extend(arr.clone());
-                        } else {
-                            all_values.push(v);
-                        }
-                    }
+    if all_values.is_empty()
+        && let Ok(file) = File::open(p)
+    {
+        let reader = BufReader::new(file);
+        for l in reader.lines().flatten() {
+            let trimmed = l.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+                if let Some(arr) = v.as_array() {
+                    all_values.extend(arr.clone());
+                } else {
+                    all_values.push(v);
                 }
             }
         }

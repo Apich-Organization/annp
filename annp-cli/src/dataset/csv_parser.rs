@@ -114,13 +114,11 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
         Ok(())
     };
 
-    for result in reader.records() {
-        if let Ok(record) = result {
-            current_chunk.push(record);
-            total_count += 1;
-            if current_chunk.len() >= chunk_size {
-                flush_chunk(&mut current_chunk)?;
-            }
+    for record in reader.records().flatten() {
+        current_chunk.push(record);
+        total_count += 1;
+        if current_chunk.len() >= chunk_size {
+            flush_chunk(&mut current_chunk)?;
         }
     }
     flush_chunk(&mut current_chunk)?;
