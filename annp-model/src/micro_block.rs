@@ -287,7 +287,28 @@ impl MicroBlockNode {
 
         let d_head = self.config.d_head;
         let ffn_dim = d_head * self.config.ffn_expansion;
-        let active = self.active_subnode;
+
+        // --- UCB Multi-Armed Bandit Active Subnode Selection ---
+        let total_activations: u64 = self.subnodes.iter().map(|s| s.credit_stats.count).sum();
+        let ln_total = (total_activations as f32).ln().max(0.0);
+        let mut best_ucb = f32::NEG_INFINITY;
+        let mut active_idx = 0;
+
+        for (i, subnode) in self.subnodes.iter().enumerate() {
+            let ucb = if subnode.credit_stats.count == 0 {
+                f32::INFINITY // Always explore newly born subnodes
+            } else {
+                let exploit = subnode.credit_stats.mean;
+                let explore = (2.0 * ln_total / subnode.credit_stats.count as f32).sqrt();
+                exploit + 0.1 * explore // C = 0.1
+            };
+            if ucb > best_ucb {
+                best_ucb = ucb;
+                active_idx = i;
+            }
+        }
+        self.active_subnode = active_idx;
+        let active = active_idx;
 
         // 1. Rigorous Superposition (Mean Field Aggregation)
         // By taking the mean, we preserve the variance of the field and make the node's
@@ -381,7 +402,8 @@ impl MicroBlockNode {
                         self.attention_ops_count += 1;
                     }
 
-                    for subnode in self.subnodes.iter_mut() {
+                    {
+                        let subnode = &mut self.subnodes[active];
                         let alpha = subnode.alpha;
 
                         if self.use_cuda {
@@ -499,7 +521,7 @@ impl MicroBlockNode {
 
                     let err_mag: f32 =
                         local_err.iter().map(|&x| x.abs()).sum::<f32>() / d_head as f32;
-                    self.subnodes[0].credit_stats.observe(-err_mag);
+                    self.subnodes[active].credit_stats.observe(-err_mag);
                 }
             }
         }
@@ -513,7 +535,8 @@ impl MicroBlockNode {
         self.p_out_buf.copy_from_slice(&self.p_in_buf);
 
         let mut temp_out = vec![0.0f32; d_head];
-        for subnode in self.subnodes.iter() {
+        {
+            let subnode = &self.subnodes[active];
             let alpha = subnode.alpha;
             let w_gate = &subnode.w_gate;
             let w_up = &subnode.w_up;
@@ -604,6 +627,9 @@ impl MicroBlockNode {
         self.recent_activation_count += batch_size as u64;
         self.cumulative_sequence_len += batch_size as u64;
         self.subnodes[active].activation_count += batch_size as u64;
+
+        self.try_subnode_neurogenesis();
+        self.prune_dominated_subnodes();
     }
 
     /// Extract current research metrics and reset node-local accumulators
