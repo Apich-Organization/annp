@@ -259,119 +259,124 @@ impl MicroBlockNode {
 
         let d_head = self.config.d_head;
         let ffn_dim = d_head * self.config.ffn_expansion;
-
         let active = self.active_subnode;
 
-        for p_idx in 0..batch_size {
-            let kv_len = self.k_cache.len() / d_head;
+        // 1. Rigorous Superposition (Mean Field Aggregation)
+        // By taking the mean, we preserve the variance of the field and make the node's
+        // response permutation-invariant (order-independent) for simultaneous arrivals.
+        self.p_in_buf.clear();
+        self.p_in_buf.resize(d_head, 0.0);
+        for p in particles.iter() {
+            for d in 0..d_head {
+                self.p_in_buf[d] += p.payload[d];
+            }
+        }
+        let inv_n = 1.0 / (batch_size as f32);
+        for d in 0..d_head {
+            self.p_in_buf[d] *= inv_n;
+        }
 
-            // INDEPENDENT PARTICLE PROCESSING (NO SUPERPOSITION COLLISION)
-            self.p_in_buf.clear();
-            self.p_in_buf.resize(d_head, 0.0);
-            self.p_in_buf.copy_from_slice(&particles[p_idx].payload);
+        self.last_p_in.copy_from_slice(&self.p_in_buf);
+        // Representative token ID for KV cache and temporal difference
+        let token_id = particles[0].header.origin_token_id;
 
-            self.last_p_in.copy_from_slice(&self.p_in_buf);
-            let token_id = particles[p_idx].header.origin_token_id;
+        // 2. Local Predictive Learning (Temporal Difference)
+        if let Some(last_id) = self.last_token_id {
+            if token_id == last_id + 1 {
+                let mut local_err = vec![0.0f32; d_head];
+                for d in 0..d_head {
+                    local_err[d] = self.last_prediction[d] - self.p_in_buf[d];
+                }
 
-            // Local Predictive Learning (Temporal Difference)
-            if let Some(last_id) = self.last_token_id {
-                if token_id == last_id + 1 {
-                    let mut local_err = vec![0.0f32; d_head];
+                let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
+                let mse = sq_err / d_head as f32;
+                if mse > 10.0 && self.activation_count % 1000 == 0 {
+                    println!(
+                        "DEBUG [Node {}]: MSE={}, last_prediction[0]={}, p_in_buf[0]={}",
+                        self.node_id, mse, self.last_prediction[0], self.p_in_buf[0]
+                    );
+                }
+                self.local_loss_accumulator += mse;
+                self.local_loss_count += 1;
+
+                if is_training {
+                    let lr = 0.01 / (self.config.max_hop as f32);
+                    let weight_decay = 1e-4f32;
+                    let wd_factor = 1.0 - lr * weight_decay;
+
+                    let kv_len = self.k_cache.len() / d_head;
+                    let mut p_in_normed = vec![0.0f32; d_head];
+                    let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
+                    let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + 1e-8).sqrt();
                     for d in 0..d_head {
-                        local_err[d] = self.last_prediction[d] - self.p_in_buf[d];
+                        p_in_normed[d] = self.last_p_in[d] * inv_rms_attn;
                     }
 
-                    let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
-                    let mse = sq_err / d_head as f32;
-                    if mse > 10.0 && self.activation_count % 1000 == 0 {
-                        println!(
-                            "DEBUG [Node {}]: MSE={}, last_prediction[0]={}, p_in_buf[0]={}",
-                            self.node_id, mse, self.last_prediction[0], self.p_in_buf[0]
-                        );
+                    let mut attn_out = vec![0.0f32; d_head];
+                    let mut backprop_kv_len = kv_len;
+                    if backprop_kv_len > 0 {
+                        backprop_kv_len -= 1;
                     }
-                    self.local_loss_accumulator += mse;
-                    self.local_loss_count += 1;
 
-                    if is_training {
-                        let lr = 0.01 / (self.config.max_hop as f32);
-                        let weight_decay = 1e-4f32;
-                        let wd_factor = 1.0 - lr * weight_decay;
+                    if backprop_kv_len > 0 {
+                        let mut best_sim = -1e9f32;
+                        let scale = 1.0 / (d_head as f32).sqrt();
+                        let mut scores = vec![0.0f32; backprop_kv_len];
 
-                        let mut p_in_normed = vec![0.0f32; d_head];
-                        let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
-                        let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + 1e-8).sqrt();
-                        for d in 0..d_head {
-                            p_in_normed[d] = self.last_p_in[d] * inv_rms_attn;
-                        }
-
-                        let mut attn_out = vec![0.0f32; d_head];
-                        let mut backprop_kv_len = kv_len;
-                        if backprop_kv_len > 0 {
-                            backprop_kv_len -= 1;
-                        }
-
-                        if backprop_kv_len > 0 {
-                            let mut best_sim = -1.0f32;
-                            let scale = 1.0 / (d_head as f32).sqrt();
-                            let mut scores = vec![0.0f32; backprop_kv_len];
-
-                            for i in 0..backprop_kv_len {
-                                let k_slice = &self.k_cache[i * d_head..(i + 1) * d_head];
-                                let mut dot = 0.0f32;
-                                for d in 0..d_head {
-                                    dot += p_in_normed[d] * k_slice[d];
-                                }
-                                let score = dot * scale;
-                                scores[i] = score;
-                                if score > best_sim {
-                                    best_sim = score;
-                                }
+                        for i in 0..backprop_kv_len {
+                            let k_slice = &self.k_cache[i * d_head..(i + 1) * d_head];
+                            let mut dot = 0.0f32;
+                            for d in 0..d_head {
+                                dot += p_in_normed[d] * k_slice[d];
                             }
-
-                            if best_sim > 0.0 {
-                                let mut sum_exp = 0.0f32;
-                                for i in 0..backprop_kv_len {
-                                    let e = (scores[i] - best_sim).exp();
-                                    scores[i] = e;
-                                    sum_exp += e;
-                                }
-
-                                let inv_sum = 1.0 / (sum_exp + 1e-8);
-                                for i in 0..backprop_kv_len {
-                                    let w = scores[i] * inv_sum;
-                                    let v_slice = &self.v_cache[i * d_head..(i + 1) * d_head];
-                                    for d in 0..d_head {
-                                        attn_out[d] += w * v_slice[d];
-                                    }
-                                }
+                            let score = dot * scale;
+                            scores[i] = score;
+                            if score > best_sim {
+                                best_sim = score;
                             }
                         }
 
-                        for subnode in self.subnodes.iter_mut() {
-                            let alpha = subnode.alpha;
+                        let mut sum_exp = 0.0f32;
+                        for i in 0..backprop_kv_len {
+                            let e = (scores[i] - best_sim).exp();
+                            scores[i] = e;
+                            sum_exp += e;
+                        }
 
-                            if self.use_cuda {
-                                annp_cuda::ffi::CudaMicroBlockRunner::execute_backward(
-                                    &self.last_p_in,
-                                    &self.k_cache,
-                                    &self.v_cache,
-                                    &mut subnode.w_gate,
-                                    &mut subnode.w_up,
-                                    &mut subnode.w_down,
-                                    &local_err,
-                                    d_head,
-                                    ffn_dim,
-                                    backprop_kv_len,
-                                    alpha,
-                                    lr,
-                                    weight_decay,
-                                    None,
-                                    true,
-                                    subnode.d_weights.as_ref(),
-                                );
-                                continue;
+                        let inv_sum = 1.0 / (sum_exp + 1e-8);
+                        for i in 0..backprop_kv_len {
+                            let w = scores[i] * inv_sum;
+                            let v_slice = &self.v_cache[i * d_head..(i + 1) * d_head];
+                            for d in 0..d_head {
+                                attn_out[d] += w * v_slice[d];
                             }
+                        }
+                    }
 
+                    for subnode in self.subnodes.iter_mut() {
+                        let alpha = subnode.alpha;
+
+                        if self.use_cuda {
+                            annp_cuda::ffi::CudaMicroBlockRunner::execute_backward(
+                                &self.last_p_in,
+                                &self.k_cache,
+                                &self.v_cache,
+                                &mut subnode.w_gate,
+                                &mut subnode.w_up,
+                                &mut subnode.w_down,
+                                &local_err,
+                                d_head,
+                                ffn_dim,
+                                backprop_kv_len,
+                                alpha,
+                                lr,
+                                weight_decay,
+                                None,
+                                true,
+                                subnode.d_weights.as_ref(),
+                            );
+                        } else {
+                            // 3. CPU Fallback Backward Pass
                             let mut s_mid = vec![0.0f32; d_head];
                             for d in 0..d_head {
                                 s_mid[d] = self.last_p_in[d] + alpha * attn_out[d];
@@ -468,51 +473,57 @@ impl MicroBlockNode {
                     self.subnodes[0].credit_stats.observe(-err_mag);
                 }
             }
+        }
 
-            self.p_out_buf.clear();
-            self.p_out_buf.resize(d_head, 0.0f32);
-            self.p_out_buf.copy_from_slice(&self.p_in_buf);
+        // 4. Forward Pass (CUDA or CPU) on Superposed Input
+        let kv_len = self.k_cache.len() / d_head;
+        self.p_out_buf.clear();
+        self.p_out_buf.resize(d_head, 0.0f32);
+        self.p_out_buf.copy_from_slice(&self.p_in_buf);
 
-            let mut temp_out = vec![0.0f32; d_head];
-            for subnode in self.subnodes.iter() {
-                let alpha = subnode.alpha;
-                let w_gate = &subnode.w_gate;
-                let w_up = &subnode.w_up;
-                let w_down = &subnode.w_down;
+        let mut temp_out = vec![0.0f32; d_head];
+        for subnode in self.subnodes.iter() {
+            let alpha = subnode.alpha;
+            let w_gate = &subnode.w_gate;
+            let w_up = &subnode.w_up;
+            let w_down = &subnode.w_down;
 
-                annp_cuda::ffi::CudaMicroBlockRunner::execute_fused_with_stream_device(
-                    &self.p_in_buf,
-                    &self.k_cache,
-                    &self.v_cache,
-                    w_gate,
-                    w_up,
-                    w_down,
-                    &mut temp_out,
-                    1,
-                    d_head,
-                    ffn_dim,
-                    kv_len,
-                    alpha,
-                    None,
-                    self.use_cuda,
-                    subnode.d_weights.as_ref(),
-                );
+            annp_cuda::ffi::CudaMicroBlockRunner::execute_fused_with_stream_device(
+                &self.p_in_buf,
+                &self.k_cache,
+                &self.v_cache,
+                w_gate,
+                w_up,
+                w_down,
+                &mut temp_out,
+                1,
+                d_head,
+                ffn_dim,
+                kv_len,
+                alpha,
+                None,
+                self.use_cuda,
+                subnode.d_weights.as_ref(),
+            );
 
-                for d in 0..d_head {
-                    self.p_out_buf[d] += temp_out[d] - self.p_in_buf[d];
-                }
-            }
-
-            self.last_prediction.copy_from_slice(&self.p_out_buf);
-            self.last_token_id = Some(token_id);
-
-            // Update particle
-            let mut delta_n = vec![0.0f32; d_head];
             for d in 0..d_head {
-                delta_n[d] = self.p_out_buf[d] - self.p_in_buf[d];
+                self.p_out_buf[d] += temp_out[d] - self.p_in_buf[d];
             }
+        }
 
-            let p_ref = &mut particles[p_idx];
+        self.last_prediction.copy_from_slice(&self.p_out_buf);
+        self.last_token_id = Some(token_id);
+
+        // 5. Apply Transformation to All Particles
+        let mut delta_n = vec![0.0f32; d_head];
+        for d in 0..d_head {
+            delta_n[d] = self.p_out_buf[d] - self.p_in_buf[d];
+        }
+
+        // We only use the first particle for KV cache update, representing the batch collective
+        let p_clone = particles[0].clone();
+
+        for p_ref in particles.iter_mut() {
             let agreement_before = self.local_agreement(p_ref, &p_ref.payload);
             let previous_credit = p_ref.credit;
             let previous_credit_valid = p_ref.credit_valid;
@@ -540,11 +551,9 @@ impl MicroBlockNode {
             {
                 p_ref.header.halted = true;
             }
-
-            // Temporarily clone to pass to update_kv_cache without mutable aliasing issues on `self`
-            let p_clone = p_ref.clone();
-            self.update_kv_cache(&p_clone);
         }
+
+        self.update_kv_cache(&p_clone);
 
         self.activation_count += batch_size as u64;
         self.recent_activation_count += batch_size as u64;

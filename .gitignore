@@ -6,3 +6,10 @@ test_debug.rs
 tmp/annp_chunks/
 scratch.py
 test_forward.rs
+patch_alpha.py
+patch_dataset.py
+patch_debug.py
+patch_micro_block.py
+patch_v_cache.py
+annp-cuda/cuda/update_fused.py
+annp-model/rewrite_process_batch.py
