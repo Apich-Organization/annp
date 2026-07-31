@@ -455,16 +455,14 @@ impl CudaMicroBlockRunner {
                 }
 
                 // 5. Additive Residual 2 & Output Clipping
-                let min_v = _mm256_set1_ps(-100.0);
-                let max_v = _mm256_set1_ps(100.0);
+                // 5. Additive Residual 2 & Output Clipping removed (relying on model variance preservation)
                 let alpha_v = _mm256_set1_ps(alpha);
 
                 for d in (0..d_head).step_by(8) {
                     let s_mid_v = _mm256_loadu_ps(s_mid.as_ptr().add(d));
                     let down_v = _mm256_loadu_ps(down_arr.as_ptr().add(d));
                     let res = _mm256_fmadd_ps(down_v, alpha_v, s_mid_v);
-                    let clamped = _mm256_min_ps(_mm256_max_ps(res, min_v), max_v);
-                    _mm256_storeu_ps(out_slice.as_mut_ptr().add(d), clamped);
+                    _mm256_storeu_ps(out_slice.as_mut_ptr().add(d), res);
                 }
             }
 
@@ -579,10 +577,10 @@ impl CudaMicroBlockRunner {
                 }
             }
 
-            // 5. Additive Residual 2 & Output Clipping
+            // 5. Additive Residual 2 & Output Clipping removed
             for d in 0..d_head {
                 let res = s_mid[d] + alpha * down_arr[d];
-                out_slice[d] = res.clamp(-100.0, 100.0);
+                out_slice[d] = res;
             }
         }
     }

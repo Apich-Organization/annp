@@ -235,8 +235,8 @@ impl MicroBlockNode {
                 (self.kv_traces.get(index).unwrap_or(&0.0) - particle.trace_concentration).abs();
             let temporal_affinity = (1.0 - trace_diff).max(0.0);
 
-            if temporal_affinity > 0.8
-                && self.kv_token_ids.get(index) == Some(&particle.header.origin_token_id)
+            // No hard-coded 0.8 gating; use smooth continuous temporal affinity scale
+            if self.kv_token_ids.get(index) == Some(&particle.header.origin_token_id)
                 && self.kv_shard_ids.get(index) == Some(&particle.header.shard_id)
             {
                 let effective_sim = similarity * temporal_affinity;
@@ -276,7 +276,6 @@ impl MicroBlockNode {
             self.p_in_buf[d] *= inv_n;
         }
 
-        self.last_p_in.copy_from_slice(&self.p_in_buf);
         // Representative token ID for KV cache and temporal difference
         let token_id = particles[0].header.origin_token_id;
 
@@ -300,7 +299,8 @@ impl MicroBlockNode {
                 self.local_loss_count += 1;
 
                 if is_training {
-                    let lr = 0.01 / (self.config.max_hop as f32);
+                    // Mathematically scale learning rate directly by routing path expectation
+                    let lr = 1.0 / (self.config.max_hop as f32);
                     let weight_decay = 1e-4f32;
                     let wd_factor = 1.0 - lr * weight_decay;
 
@@ -438,7 +438,8 @@ impl MicroBlockNode {
                                 d_up_arr[f] = d_up;
                             }
 
-                            let max_grad = 0.05f32;
+                            // Adaptive local gradient clipping scale rather than arbitrary 0.05
+                            let max_grad = 1.0 / (d_head as f32).sqrt();
                             for f in 0..ffn_dim {
                                 let inter_val = ffn_inter[f];
                                 for d in 0..d_head {
@@ -474,6 +475,8 @@ impl MicroBlockNode {
                 }
             }
         }
+
+        self.last_p_in.copy_from_slice(&self.p_in_buf);
 
         // 4. Forward Pass (CUDA or CPU) on Superposed Input
         let kv_len = self.k_cache.len() / d_head;
@@ -515,6 +518,8 @@ impl MicroBlockNode {
         self.last_token_id = Some(token_id);
 
         // 5. Apply Transformation to All Particles
+        let active_alpha = self.subnodes[active].alpha;
+        let scale_factor = 1.0 / (1.0 + active_alpha * active_alpha).sqrt();
         let mut delta_n = vec![0.0f32; d_head];
         for d in 0..d_head {
             delta_n[d] = self.p_out_buf[d] - self.p_in_buf[d];
@@ -529,7 +534,8 @@ impl MicroBlockNode {
             let previous_credit_valid = p_ref.credit_valid;
 
             for d in 0..d_head {
-                p_ref.payload[d] += delta_n[d];
+                let new_val = (p_ref.payload[d] + delta_n[d]) * scale_factor;
+                p_ref.payload[d] = new_val;
             }
             p_ref.credit_valid = false;
 

@@ -49,7 +49,7 @@ impl Subnode {
             .map(|_| rng.random_range(-scale..scale))
             .collect();
 
-        let w_down_scale = scale * 0.05; // 5% of normal scale to prevent residual explosion across max_hops
+        let w_down_scale = scale * (1.0 / (d_head as f64).sqrt() as f32); // Mathematical variance preservation instead of arbitrary 0.05
         let w_down = (0..ffn_dim * d_head)
             .map(|_| rng.random_range(-w_down_scale..w_down_scale))
             .collect();
@@ -81,7 +81,8 @@ impl Subnode {
         ffn_dim: usize,
     ) -> Self {
         let mut rng = rand::rng();
-        let epsilon = (1.0 / (d_head as f32 * ffn_dim as f32).sqrt()) * 0.01;
+        // Base perturbation on standard deviations rather than fixed 0.01
+        let epsilon = 1.0 / (d_head as f32 * ffn_dim as f32).sqrt();
 
         let w_gate = parent
             .w_gate
