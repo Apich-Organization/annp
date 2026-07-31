@@ -312,7 +312,7 @@ impl ANNPModel {
         let mut total_volatility = 0.0;
         let mut total_affinity = 0.0;
         let mut total_subnodes = 0;
-        
+
         let mut utilization = Vec::with_capacity(self.num_nodes);
 
         for node in self.nodes.iter_mut() {
@@ -339,7 +339,7 @@ impl ANNPModel {
             num += (i as f32 + 1.0) * y_f;
             den += y_f;
         }
-        
+
         let gini = if den > 0.0 && n > 0.0 {
             (2.0 * num) / (n * den) - (n + 1.0) / n
         } else {
@@ -353,7 +353,11 @@ impl ANNPModel {
             avg_signal_energy: total_energy / pt,
             avg_subnodes: total_subnodes as f32 / self.num_nodes.max(1) as f32,
             utilization_gini: gini,
-            avg_attention_entropy: if total_attn_ops > 0 { total_entropy / total_attn_ops as f32 } else { 0.0 },
+            avg_attention_entropy: if total_attn_ops > 0 {
+                total_entropy / total_attn_ops as f32
+            } else {
+                0.0
+            },
             avg_credit_volatility: total_volatility / pt,
             avg_temporal_affinity: total_affinity / pt,
         }

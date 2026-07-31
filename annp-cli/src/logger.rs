@@ -83,7 +83,11 @@ impl AnnpLogger {
     ) {
         let msg = format!(
             "[Epoch {:2}/{:2} | Batch {:4}] Loss: {:.5} (EMA: {:.5}) | Halt: {:.1}% | Gini: {:.3} | Hops: {:.2}",
-            epoch, total_epochs, batch_idx, step_loss, rolling_loss,
+            epoch,
+            total_epochs,
+            batch_idx,
+            step_loss,
+            rolling_loss,
             metrics.early_halting_rate * 100.0,
             metrics.utilization_gini,
             metrics.avg_hop_count
@@ -100,7 +104,9 @@ impl AnnpLogger {
     ) {
         let msg = format!(
             "Epoch {}/{} Metrics Summary:\n  - Avg Loss: {:.6}\n  - Avg Hop Count: {:.3}\n  - Early Halting Rate: {:.2}%\n  - Signal Energy (var): {:.5}\n  - Node Util Gini: {:.4}\n  - Attention Entropy: {:.4}\n  - Avg Active Subnodes: {:.2}\n  - Credit Volatility: {:.5}\n  - Mean Temporal Affinity: {:.4}",
-            epoch, total_epochs, avg_loss,
+            epoch,
+            total_epochs,
+            avg_loss,
             metrics.avg_hop_count,
             metrics.early_halting_rate * 100.0,
             metrics.avg_signal_energy,

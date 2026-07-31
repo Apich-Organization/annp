@@ -268,7 +268,8 @@ impl MicroBlockNode {
                 negative_count += 1;
             }
         }
-        let agreement = best_positive.map(|positive| positive - negative_sum / negative_count.max(1) as f32);
+        let agreement =
+            best_positive.map(|positive| positive - negative_sum / negative_count.max(1) as f32);
         let mean_ta = if temporal_affinity_count > 0 {
             temporal_affinity_sum / temporal_affinity_count as f32
         } else {
@@ -575,7 +576,7 @@ impl MicroBlockNode {
                 self.subnodes[active].credit_stats.observe(p_ref.credit);
                 self.sum_credit_volatility += p_ref.credit.abs();
             }
-            
+
             p_ref.header.step_hop(self.config.max_hop);
 
             if !p_ref.header.halted

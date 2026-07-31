@@ -155,7 +155,7 @@ pub fn execute_train(
             let batch_metrics = model.extract_batch_metrics();
 
             epoch_loss_sum += step_loss;
-            
+
             // Accumulate metrics for epoch summary
             epoch_metrics_acc.avg_hop_count += batch_metrics.avg_hop_count;
             epoch_metrics_acc.early_halting_rate += batch_metrics.early_halting_rate;
@@ -165,7 +165,7 @@ pub fn execute_train(
             epoch_metrics_acc.avg_attention_entropy += batch_metrics.avg_attention_entropy;
             epoch_metrics_acc.avg_credit_volatility += batch_metrics.avg_credit_volatility;
             epoch_metrics_acc.avg_temporal_affinity += batch_metrics.avg_temporal_affinity;
-            
+
             step_count += 1;
 
             rolling_ema = if step_count == 1 {

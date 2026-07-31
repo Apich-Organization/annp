@@ -115,3 +115,60 @@ impl Subnode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_random_initialization() {
+        let d_head = 64;
+        let ffn_dim = 128;
+        let alpha = 0.5;
+        let node = Subnode::new_random(1, d_head, ffn_dim, alpha);
+
+        assert_eq!(node.subnode_id, 1);
+        assert_eq!(node.alpha, 0.5);
+        assert_eq!(node.activation_count, 0);
+
+        let w_len = d_head * ffn_dim;
+        assert_eq!(node.w_gate.len(), w_len);
+        assert_eq!(node.w_up.len(), w_len);
+        assert_eq!(node.w_down.len(), w_len);
+
+        assert_eq!(node.v_gate.len(), w_len);
+        assert_eq!(node.v_up.len(), w_len);
+        assert_eq!(node.v_down.len(), w_len);
+
+        assert!(node.v_gate.iter().all(|&v| v == 0.0));
+        assert!(node.v_up.iter().all(|&v| v == 0.0));
+        assert!(node.v_down.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_spawn_from_parent() {
+        let d_head = 32;
+        let ffn_dim = 64;
+        let parent = Subnode::new_random(0, d_head, ffn_dim, 0.7);
+
+        let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim);
+
+        assert_eq!(child.subnode_id, 1);
+        assert_eq!(child.alpha, 0.7);
+
+        let w_len = d_head * ffn_dim;
+        assert_eq!(child.w_gate.len(), w_len);
+
+        let mut w_gate_diff = 0.0;
+        for i in 0..w_len {
+            w_gate_diff += (child.w_gate[i] - parent.w_gate[i]).abs();
+        }
+        assert!(
+            w_gate_diff > 0.0,
+            "Child weights must be perturbed from parent"
+        );
+
+        assert!(child.w_down.iter().all(|&w| w == 0.0));
+        assert!(child.v_gate.iter().all(|&v| v == 0.0));
+    }
+}

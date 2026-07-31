@@ -75,7 +75,6 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
     chunk_size: usize,
 ) -> Result<(Vec<std::path::PathBuf>, usize)> {
     use std::fs;
-    use std::io::Write;
     use std::path::PathBuf;
 
     let tmp_dir = PathBuf::from("tmp").join("annp_chunks");
