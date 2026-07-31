@@ -16,4 +16,4 @@ subnode_max = 8
 epochs = 8
 learning_rate = 0.05
 dataset_path = "stage_1_1-32001.json"
-dataset_format = "json"
+dataset_format = "random"

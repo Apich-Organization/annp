@@ -291,7 +291,8 @@ impl MicroBlockNode {
                 }
 
                 let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
-                self.local_loss_accumulator += sq_err;
+                let mse = sq_err / d_head as f32;
+                self.local_loss_accumulator += mse;
                 self.local_loss_count += 1;
 
                 if is_training {
@@ -472,8 +473,6 @@ impl MicroBlockNode {
                 let err_mag: f32 = local_err.iter().map(|&x| x.abs()).sum::<f32>() / d_head as f32;
                 // Observe negative error so that higher error means worse credit
                 self.subnodes[0].credit_stats.observe(-err_mag);
-                self.local_loss_accumulator += err_mag;
-                self.local_loss_count += 1;
             }
         }
 
