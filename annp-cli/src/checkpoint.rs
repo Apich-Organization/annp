@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 4;
+const ANNPB_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
@@ -151,6 +151,13 @@ impl ModelCheckpoint {
             };
             file.write_all(&(rt.weights.len() as u32).to_le_bytes())?;
             file.write_all(q_weight_bytes)?;
+
+            file.write_all(&(rt.edge_credit.len() as u32).to_le_bytes())?;
+            for stats in &rt.edge_credit {
+                file.write_all(&stats.count.to_le_bytes())?;
+                file.write_all(&stats.mean.to_le_bytes())?;
+                file.write_all(&stats.m2.to_le_bytes())?;
+            }
         }
 
         Ok(())
@@ -361,11 +368,26 @@ impl ModelCheckpoint {
             };
             file.read_exact(q_weight_bytes)?;
 
+            let mut edge_credit = Vec::new();
+            if version >= 5 {
+                file.read_exact(&mut buf4)?;
+                let ec_len = u32::from_le_bytes(buf4) as usize;
+                for _ in 0..ec_len {
+                    file.read_exact(&mut buf8)?;
+                    let count = u64::from_le_bytes(buf8);
+                    file.read_exact(&mut buf4)?;
+                    let mean = f32::from_le_bytes(buf4);
+                    file.read_exact(&mut buf4)?;
+                    let m2 = f32::from_le_bytes(buf4);
+                    edge_credit.push(OnlineStats { count, mean, m2 });
+                }
+            }
+
             routing_tables.push(RoutingTable {
                 d_head,
                 neighbors,
                 weights,
-                edge_credit: Vec::new(),
+                edge_credit,
             });
         }
 

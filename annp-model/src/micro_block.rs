@@ -289,12 +289,6 @@ impl MicroBlockNode {
 
                 let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
                 let mse = sq_err / d_head as f32;
-                if mse > 10.0 && self.activation_count % 1000 == 0 {
-                    println!(
-                        "DEBUG [Node {}]: MSE={}, last_prediction[0]={}, p_in_buf[0]={}",
-                        self.node_id, mse, self.last_prediction[0], self.p_in_buf[0]
-                    );
-                }
                 self.local_loss_accumulator += mse;
                 self.local_loss_count += 1;
 
