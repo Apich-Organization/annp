@@ -13,3 +13,5 @@ patch_micro_block.py
 patch_v_cache.py
 annp-cuda/cuda/update_fused.py
 annp-model/rewrite_process_batch.py
+cuda_runtime.h
+test.cpp

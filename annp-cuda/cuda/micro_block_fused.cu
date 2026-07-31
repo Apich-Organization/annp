@@ -279,7 +279,7 @@ extern "C" void launch_fused_micro_block(
 
     fused_micro_block_kernel<<<blocks, threads_per_block, shared_mem_bytes, stream>>>(
         dev_pin, dev_k, dev_v, dev_wgate, dev_wup, dev_wdown, dev_pout,
-        batch_size, d_head, ffn_dim, kv_len, norm_strategy, alpha, sphere_radius
+        d_head, ffn_dim, kv_len, norm_strategy, alpha, sphere_radius
     );
 
     copy_back_if_host(p_out, dev_pout, batch_size * d_head, stream);
