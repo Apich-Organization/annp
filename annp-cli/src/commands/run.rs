@@ -103,17 +103,25 @@ pub fn execute_run(
     let mut generated_ids = Vec::new();
     let mut current_len = seq_len;
 
+    // For stateful autoregressive generation, we only feed the new token each step.
+    let mut next_token_tensor = input_tensor.clone();
+
     for _step in 0..generate_len {
-        let (out, _) = model.forward(&current_sequence, 0)?;
-        total_particles_processed += current_len * num_shards;
+        // Feed only the new token, using current_len - seq_len (or just the step index) for offset if needed,
+        // but since we want the actual sequence index in the particle, we pass current_len - next_token_tensor.dim(0).
+        let batch_len = next_token_tensor.dim(0)?;
+        let offset = current_len - batch_len;
+
+        let (out, _) = model.forward(&next_token_tensor, offset)?;
+        total_particles_processed += batch_len * num_shards;
 
         if continual_mode {
             // Continual adaptation hook - model.forward automatically updates weights when is_training is true
         }
 
-        // Extract the prediction for the next token (the output of the last sequence element)
+        // Extract the prediction for the next token (the output of the last sequence element of the newly processed batch)
         let flat_out = out.flatten_all()?.to_vec1::<f32>()?;
-        let last_out = &flat_out[(current_len - 1) * d_model..current_len * d_model];
+        let last_out = &flat_out[(batch_len - 1) * d_model..batch_len * d_model];
 
         // Decode via Nearest Neighbor Search over vocab (1..32000)
         let mut best_id = 1u32;
@@ -182,6 +190,7 @@ pub fn execute_run(
 
         let next_tensor = Tensor::from_vec(next_vec, (1, d_model), &device)?;
         current_sequence = Tensor::cat(&[&current_sequence, &next_tensor], 0)?;
+        next_token_tensor = next_tensor;
         current_len += 1;
     }
 
