@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 pub mod micro_block;
 pub mod model;
 pub mod scattering;

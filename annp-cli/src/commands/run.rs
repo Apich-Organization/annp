@@ -101,12 +101,11 @@ pub fn execute_run(
 
     // Store decoded text
     let mut generated_ids = Vec::new();
-    let mut current_len = seq_len;
 
     // For stateful autoregressive generation, we only feed the new token each step.
     let mut next_token_tensor = input_tensor.clone();
 
-    for _step in 0..generate_len {
+    for (current_len, _step) in (seq_len..).zip(0..generate_len) {
         // Feed only the new token, using current_len - seq_len (or just the step index) for offset if needed,
         // but since we want the actual sequence index in the particle, we pass current_len - next_token_tensor.dim(0).
         let batch_len = next_token_tensor.dim(0)?;
@@ -191,7 +190,6 @@ pub fn execute_run(
         let next_tensor = Tensor::from_vec(next_vec, (1, d_model), &device)?;
         current_sequence = Tensor::cat(&[&current_sequence, &next_tensor], 0)?;
         next_token_tensor = next_tensor;
-        current_len += 1;
     }
 
     println!(

@@ -149,9 +149,9 @@ impl ANNPModel {
                 q.clear();
             }
 
-            for node_id in 0..self.num_nodes {
-                curr_batches[node_id].clear();
-                std::mem::swap(&mut curr_batches[node_id], &mut self.node_queues[node_id]);
+            for (batch, node_q) in curr_batches.iter_mut().zip(self.node_queues.iter_mut()) {
+                batch.clear();
+                std::mem::swap(batch, node_q);
             }
 
             let use_cuda_mode = self.nodes.first().is_some_and(|n| n.use_cuda);
@@ -215,8 +215,7 @@ impl ANNPModel {
             }
 
             // Push-routing decision for output particles with P2P Backpressure penalty
-            for node_id in 0..self.num_nodes {
-                let curr_batch = &mut curr_batches[node_id];
+            for (node_id, curr_batch) in curr_batches.iter_mut().enumerate() {
                 if curr_batch.is_empty() {
                     continue;
                 }

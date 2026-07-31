@@ -374,12 +374,12 @@ pub fn generate_synthetic_pattern_tensors(d_model: usize, device: &Device) -> Re
 
             // Scatter key token at step 4 of each batch for long-range associative memory testing
             if t == 4 {
-                for d in 0..d_model {
-                    prev_memory_key[d] = ((d as f32 * 0.1).sin() + (t_norm * 0.3).cos()) * 1.5;
+                for (d, val) in prev_memory_key.iter_mut().enumerate() {
+                    *val = ((d as f32 * 0.1).sin() + (t_norm * 0.3).cos()) * 1.5;
                 }
             }
 
-            for d in 0..d_model {
+            for (d, &prev_key_val) in prev_memory_key.iter().enumerate() {
                 let d_norm = d as f32 / d_model as f32;
                 let d_val = d as f32 * 0.08f32;
 
@@ -396,7 +396,7 @@ pub fn generate_synthetic_pattern_tensors(d_model: usize, device: &Device) -> Re
                         // Long-Range Associative Memory Retrieval (Step t=48 echoes Key from t=4)
                         if (48..=52).contains(&t) {
                             let decay = (-((t as i32 - 48) as f32 * 0.5)).exp();
-                            prev_memory_key[d] * decay + 0.1 * (t_norm + d_val).sin()
+                            prev_key_val * decay + 0.1 * (t_norm + d_val).sin()
                         } else {
                             0.5 * (t_norm * 0.4 + d_val * 2.0).cos()
                         }

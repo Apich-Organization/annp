@@ -30,6 +30,7 @@ impl ParticleCudaHeader {
 }
 
 unsafe extern "C" {
+    #[allow(dead_code)]
     fn launch_fused_micro_block_backward(
         p_in: *const f32,
         k_cache: *const f32,
@@ -359,9 +360,9 @@ impl CudaMicroBlockRunner {
                     }
 
                     let mut sum_exp = 0.0f32;
-                    for k in 0..kv_len {
-                        let e = (scores[k] - max_score).exp();
-                        scores[k] = e;
+                    for score in scores.iter_mut().take(kv_len) {
+                        let e = (*score - max_score).exp();
+                        *score = e;
                         sum_exp += e;
                     }
 
@@ -409,8 +410,8 @@ impl CudaMicroBlockRunner {
                 let mut gate_arr = [0.0f32; MAX_FFN_DIM];
                 let mut up_arr = [0.0f32; MAX_FFN_DIM];
 
-                for d in 0..d_head {
-                    let m_v = _mm256_set1_ps(s_mid_normed[d]);
+                for (d, &m_val) in s_mid_normed.iter().enumerate().take(d_head) {
+                    let m_v = _mm256_set1_ps(m_val);
                     let d_offset = d * ffn_dim;
 
                     for j in (0..ffn_dim).step_by(8) {
@@ -430,18 +431,18 @@ impl CudaMicroBlockRunner {
                     }
                 }
 
-                for j in 0..ffn_dim {
+                for (j, inter) in ffn_inter.iter_mut().enumerate().take(ffn_dim) {
                     let gate = gate_arr[j];
                     let up = up_arr[j];
                     let swish = gate / (1.0 + (-gate).exp());
-                    ffn_inter[j] = swish * up;
+                    *inter = swish * up;
                 }
 
                 // 4. Down Projection
                 let mut down_arr = [0.0f32; MAX_D_HEAD];
 
-                for j in 0..ffn_dim {
-                    let inter_v = _mm256_set1_ps(ffn_inter[j]);
+                for (j, &inter_val) in ffn_inter.iter().enumerate().take(ffn_dim) {
+                    let inter_v = _mm256_set1_ps(inter_val);
                     let j_offset = j * d_head;
 
                     for d in (0..d_head).step_by(8) {
@@ -523,9 +524,9 @@ impl CudaMicroBlockRunner {
                     }
 
                     let mut sum_exp = 0.0f32;
-                    for k in 0..actual_kv {
-                        let e = (scores[k] - max_score).exp();
-                        scores[k] = e;
+                    for score in scores.iter_mut().take(actual_kv) {
+                        let e = (*score - max_score).exp();
+                        *score = e;
                         sum_exp += e;
                     }
 

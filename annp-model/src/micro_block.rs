@@ -340,8 +340,11 @@ impl MicroBlockNode {
             && token_id == last_id + 1
         {
             let mut local_err = vec![0.0f32; d_head];
-            for d in 0..d_head {
-                local_err[d] = self.last_prediction[d] - self.p_in_buf[d];
+            for (err, (pred, p_in)) in local_err
+                .iter_mut()
+                .zip(self.last_prediction.iter().zip(self.p_in_buf.iter()))
+            {
+                *err = pred - p_in;
             }
 
             let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
@@ -359,8 +362,8 @@ impl MicroBlockNode {
                 let mut p_in_normed = vec![0.0f32; d_head];
                 let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
                 let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + 1e-8).sqrt();
-                for d in 0..d_head {
-                    p_in_normed[d] = self.last_p_in[d] * inv_rms_attn;
+                for (normed, &in_val) in p_in_normed.iter_mut().zip(self.last_p_in.iter()) {
+                    *normed = in_val * inv_rms_attn;
                 }
 
                 let mut attn_out = vec![0.0f32; d_head];
@@ -372,36 +375,36 @@ impl MicroBlockNode {
                     let scale = 1.0 / (d_head as f32).sqrt();
                     let mut scores = vec![0.0f32; backprop_kv_len];
 
-                    for i in 0..backprop_kv_len {
+                    for (i, score) in scores.iter_mut().enumerate() {
                         let k_slice = &self.k_cache[i * d_head..(i + 1) * d_head];
                         let mut dot = 0.0f32;
-                        for d in 0..d_head {
-                            dot += p_in_normed[d] * k_slice[d];
+                        for (p_val, k_val) in p_in_normed.iter().zip(k_slice.iter()) {
+                            dot += p_val * k_val;
                         }
-                        let score = dot * scale;
-                        scores[i] = score;
-                        if score > best_sim {
-                            best_sim = score;
+                        let s = dot * scale;
+                        *score = s;
+                        if s > best_sim {
+                            best_sim = s;
                         }
                     }
 
                     let mut sum_exp = 0.0f32;
-                    for i in 0..backprop_kv_len {
-                        let e = (scores[i] - best_sim).exp();
-                        scores[i] = e;
+                    for score in scores.iter_mut() {
+                        let e = (*score - best_sim).exp();
+                        *score = e;
                         sum_exp += e;
                     }
 
                     let inv_sum = 1.0 / (sum_exp + 1e-8);
                     let mut entropy = 0.0f32;
-                    for i in 0..backprop_kv_len {
-                        let w = scores[i] * inv_sum;
+                    for (i, &score) in scores.iter().enumerate() {
+                        let w = score * inv_sum;
                         if w > 1e-10 {
                             entropy -= w * w.ln();
                         }
                         let v_slice = &self.v_cache[i * d_head..(i + 1) * d_head];
-                        for d in 0..d_head {
-                            attn_out[d] += w * v_slice[d];
+                        for (out_val, &v_val) in attn_out.iter_mut().zip(v_slice.iter()) {
+                            *out_val += w * v_val;
                         }
                     }
                     self.sum_attention_entropy += entropy;
@@ -434,15 +437,18 @@ impl MicroBlockNode {
                     } else {
                         // 3. CPU Fallback Backward Pass
                         let mut s_mid = vec![0.0f32; d_head];
-                        for d in 0..d_head {
-                            s_mid[d] = self.last_p_in[d] + alpha * attn_out[d];
+                        for (s, (&in_val, &attn_val)) in s_mid
+                            .iter_mut()
+                            .zip(self.last_p_in.iter().zip(attn_out.iter()))
+                        {
+                            *s = in_val + alpha * attn_val;
                         }
 
                         let mut s_mid_normed = vec![0.0f32; d_head];
                         let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
                         let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
-                        for d in 0..d_head {
-                            s_mid_normed[d] = s_mid[d] * inv_rms_ffn;
+                        for (normed, &s_val) in s_mid_normed.iter_mut().zip(s_mid.iter()) {
+                            *normed = s_val * inv_rms_ffn;
                         }
 
                         let mut ffn_inter = vec![0.0f32; ffn_dim];
@@ -453,8 +459,7 @@ impl MicroBlockNode {
                         for f in 0..ffn_dim {
                             let mut gate = 0.0f32;
                             let mut up = 0.0f32;
-                            for d in 0..d_head {
-                                let m_val = s_mid_normed[d];
+                            for (d, &m_val) in s_mid_normed.iter().enumerate() {
                                 gate += m_val * subnode.w_gate[d * ffn_dim + f];
                                 up += m_val * subnode.w_up[d * ffn_dim + f];
                             }
@@ -469,12 +474,12 @@ impl MicroBlockNode {
                         }
 
                         let mut d_inter = vec![0.0f32; ffn_dim];
-                        for f in 0..ffn_dim {
+                        for (f, inter_val) in d_inter.iter_mut().enumerate() {
                             let mut sum = 0.0f32;
-                            for d in 0..d_head {
-                                sum += local_err[d] * subnode.w_down[f * d_head + d];
+                            for (d, &err) in local_err.iter().enumerate() {
+                                sum += err * subnode.w_down[f * d_head + d];
                             }
-                            d_inter[f] = sum;
+                            *inter_val = sum;
                         }
 
                         let mut d_gate_arr = vec![0.0f32; ffn_dim];
@@ -496,28 +501,25 @@ impl MicroBlockNode {
 
                         // Adaptive local gradient clipping scale rather than arbitrary 0.05
                         let max_grad = 1.0 / (d_head as f32).sqrt();
-                        for f in 0..ffn_dim {
-                            let inter_val = ffn_inter[f];
-                            for d in 0..d_head {
-                                let idx = f * d_head + d;
-                                let grad =
-                                    (local_err[d] * inter_val * alpha).clamp(-max_grad, max_grad);
-                                subnode.w_down[idx] = subnode.w_down[idx] * wd_factor - lr * grad;
+                        for (f, &inter_val) in ffn_inter.iter().enumerate() {
+                            let w_down_slice = &mut subnode.w_down[f * d_head..(f + 1) * d_head];
+                            for (d, &err_val) in local_err.iter().enumerate() {
+                                let grad = (err_val * inter_val * alpha).clamp(-max_grad, max_grad);
+                                w_down_slice[d] = w_down_slice[d] * wd_factor - lr * grad;
                             }
                         }
 
-                        for d in 0..d_head {
-                            let m_val = s_mid_normed[d];
+                        for (d, &m_val) in s_mid_normed.iter().enumerate() {
+                            let w_gate_slice = &mut subnode.w_gate[d * ffn_dim..(d + 1) * ffn_dim];
+                            let w_up_slice = &mut subnode.w_up[d * ffn_dim..(d + 1) * ffn_dim];
                             for f in 0..ffn_dim {
-                                let idx = d * ffn_dim + f;
                                 let grad_gate =
                                     (d_gate_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
                                 let grad_up =
                                     (d_up_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
 
-                                subnode.w_gate[idx] =
-                                    subnode.w_gate[idx] * wd_factor - lr * grad_gate;
-                                subnode.w_up[idx] = subnode.w_up[idx] * wd_factor - lr * grad_up;
+                                w_gate_slice[f] = w_gate_slice[f] * wd_factor - lr * grad_gate;
+                                w_up_slice[f] = w_up_slice[f] * wd_factor - lr * grad_up;
                             }
                         }
                     }
@@ -562,8 +564,12 @@ impl MicroBlockNode {
                 subnode.d_weights.as_ref(),
             );
 
-            for d in 0..d_head {
-                self.p_out_buf[d] += temp_out[d] - self.p_in_buf[d];
+            for (out_val, (temp_val, in_val)) in self
+                .p_out_buf
+                .iter_mut()
+                .zip(temp_out.iter().zip(self.p_in_buf.iter()))
+            {
+                *out_val += temp_val - in_val;
             }
         }
 
@@ -574,8 +580,11 @@ impl MicroBlockNode {
         let active_alpha = self.subnodes[active].alpha;
         let scale_factor = 1.0 / (1.0 + active_alpha * active_alpha).sqrt();
         let mut delta_n = vec![0.0f32; d_head];
-        for d in 0..d_head {
-            delta_n[d] = self.p_out_buf[d] - self.p_in_buf[d];
+        for (delta, (out_val, in_val)) in delta_n
+            .iter_mut()
+            .zip(self.p_out_buf.iter().zip(self.p_in_buf.iter()))
+        {
+            *delta = out_val - in_val;
         }
 
         // We only use the first particle for KV cache update, representing the batch collective
@@ -586,9 +595,8 @@ impl MicroBlockNode {
             let previous_credit = p_ref.credit;
             let previous_credit_valid = p_ref.credit_valid;
 
-            for d in 0..d_head {
-                let new_val = (p_ref.payload[d] + delta_n[d]) * scale_factor;
-                p_ref.payload[d] = new_val;
+            for (payload_val, delta_val) in p_ref.payload.iter_mut().zip(delta_n.iter()) {
+                *payload_val = (*payload_val + delta_val) * scale_factor;
             }
             p_ref.credit_valid = false;
 

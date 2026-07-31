@@ -1,11 +1,11 @@
 [model]
 num_shards = 4
-mesh_rows = 16
-mesh_cols = 16
+mesh_rows = 10
+mesh_cols = 10
 d_head = 64
 ffn_expansion = 8
 initial_energy = 1.0
-max_hop = 32
+max_hop = 20
 min_hop = 2
 norm_strategy = "RMSNorm"
 
@@ -16,4 +16,4 @@ subnode_max = 8
 epochs = 8
 learning_rate = 0.05
 dataset_path = "synthetic"
-dataset_format = "random"
+dataset_format = "synthetic"

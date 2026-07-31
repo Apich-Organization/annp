@@ -147,7 +147,7 @@ pub fn split_and_cache_dataset<P: AsRef<Path>>(
         && let Ok(file) = File::open(p)
     {
         let reader = BufReader::new(file);
-        for l in reader.lines().flatten() {
+        for l in reader.lines().map_while(|l| l.ok()) {
             let trimmed = l.trim();
             if trimmed.is_empty() {
                 continue;
