@@ -304,8 +304,10 @@ impl MicroBlockNode {
                 f32::INFINITY // Always explore newly born subnodes
             } else {
                 let exploit = subnode.credit_stats.mean;
-                let explore = (2.0 * ln_total / subnode.credit_stats.count as f32).sqrt();
-                exploit + 0.1 * explore // C = 0.1
+                // Adaptive exploration scale based on empirical standard deviation (UCB-Tuned)
+                let std_dev = subnode.credit_stats.variance().sqrt().max(1e-4);
+                let explore = std_dev * (2.0 * ln_total / subnode.credit_stats.count as f32).sqrt();
+                exploit + explore
             };
             if ucb > best_ucb {
                 best_ucb = ucb;

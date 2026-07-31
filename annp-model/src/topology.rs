@@ -80,7 +80,6 @@ impl RoutingTable {
             .sum::<u64>()
             .max(1);
         let log_total = (total_activations as f32).ln().max(0.001);
-        let exploration_constant = 1.0; // Automatically balanced by energy/loss scale in a real system
 
         let mut best = 0;
         let mut best_score = f32::NEG_INFINITY;
@@ -91,14 +90,17 @@ impl RoutingTable {
                 dot += particle.payload[d] * self.weights[d * num_neighbors + k];
             }
 
-            let stats = self.edge_credit.get(k);
-            let count = stats.map(|s| s.count).unwrap_or(0);
-            let q_value = stats.map(|s| s.optimistic_value()).unwrap_or(0.0);
-
-            let ucb_score = if count == 0 {
-                f32::INFINITY
+            let ucb_score = if let Some(stats) = self.edge_credit.get(k) {
+                if stats.count == 0 {
+                    f32::INFINITY
+                } else {
+                    let mean = stats.mean;
+                    let std_dev = stats.variance().sqrt().max(1e-4);
+                    let explore = std_dev * (2.0 * log_total / stats.count as f32).sqrt();
+                    dot + mean + explore
+                }
             } else {
-                dot + q_value + exploration_constant * (log_total / count as f32).sqrt()
+                f32::INFINITY
             };
 
             if ucb_score > best_score {

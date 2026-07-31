@@ -16,4 +16,4 @@ subnode_max = 8
 epochs = 8
 learning_rate = 0.05
 dataset_path = "synthetic"
-dataset_format = "synthetic"
+dataset_format = "random"
