@@ -3,7 +3,7 @@ num_shards = 4
 mesh_rows = 10
 mesh_cols = 10
 d_head = 64
-ffn_expansion = 8
+ffn_expansion = 4
 initial_energy = 1.0
 max_hop = 20
 min_hop = 2
@@ -13,7 +13,7 @@ norm_strategy = "RMSNorm"
 subnode_max = 8
 
 [train]
-epochs = 8
-learning_rate = 0.05
-dataset_path = "synthetic"
-dataset_format = "synthetic"
+epochs = 64
+learning_rate = 0.02
+dataset_path = "stage_1_1-32001.json"
+dataset_format = "json"
