@@ -109,9 +109,8 @@ pub fn execute_run(
         // Feed only the new token, using current_len - seq_len (or just the step index) for offset if needed,
         // but since we want the actual sequence index in the particle, we pass current_len - next_token_tensor.dim(0).
         let batch_len = next_token_tensor.dim(0)?;
-        let offset = current_len - batch_len;
 
-        let (out, _) = model.forward(&next_token_tensor, offset)?;
+        let (out, _) = model.forward(&next_token_tensor, current_sequence.dim(0)?, None)?;
         total_particles_processed += batch_len * num_shards;
 
         if continual_mode {

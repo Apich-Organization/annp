@@ -96,7 +96,7 @@ impl RoutingTable {
                 } else {
                     let mean = stats.mean;
                     let std_dev = stats.variance().sqrt().max(1e-4);
-                    let explore = std_dev * (2.0 * log_total / stats.count as f32).sqrt();
+                    let explore = std_dev * (1.0 * log_total / stats.count as f32).sqrt();
                     dot + mean + explore
                 }
             } else {

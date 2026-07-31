@@ -279,7 +279,7 @@ impl MicroBlockNode {
     }
 
     /// Process a batch of particles through Micro-Block CUDA/CPU computation pipeline (0 heap allocations)
-    pub fn process_batch(&mut self, particles: &mut [Particle], is_training: bool) {
+    pub fn process_batch(&mut self, particles: &mut [Particle], learning_rate: Option<f32>) {
         let batch_size = particles.len();
         if batch_size == 0 {
             return;
@@ -306,7 +306,7 @@ impl MicroBlockNode {
                 let exploit = subnode.credit_stats.mean;
                 // Adaptive exploration scale based on empirical standard deviation (UCB-Tuned)
                 let std_dev = subnode.credit_stats.variance().sqrt().max(1e-4);
-                let explore = std_dev * (2.0 * ln_total / subnode.credit_stats.count as f32).sqrt();
+                let explore = std_dev * (1.0 * ln_total / subnode.credit_stats.count as f32).sqrt();
                 exploit + explore
             };
             if ucb > best_ucb {
@@ -352,9 +352,7 @@ impl MicroBlockNode {
             self.local_loss_accumulator += mse;
             self.local_loss_count += 1;
 
-            if is_training {
-                // Mathematically scale learning rate directly by routing path expectation
-                let lr = 1.0 / (self.config.max_hop as f32);
+            if let Some(lr) = learning_rate {
                 let weight_decay = 1e-4f32;
                 let wd_factor = 1.0 - lr * weight_decay;
 

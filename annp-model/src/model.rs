@@ -110,7 +110,12 @@ impl ANNPModel {
     }
 
     /// Forward pass through ANNP P2P Mesh with lock-free dtact coroutine mesh scheduling
-    pub fn forward(&mut self, embeddings: &Tensor, offset: usize) -> Result<(Tensor, f32)> {
+    pub fn forward(
+        &mut self,
+        embeddings: &Tensor,
+        offset: usize,
+        lr: Option<f32>,
+    ) -> Result<(Tensor, f32)> {
         let (seq_len, _) = embeddings.dims2()?;
         let mut initial_particles =
             self.scattering
@@ -160,7 +165,7 @@ impl ANNPModel {
                 // GPU Mode: Execute active nodes on CUDA GPU stream without CPU multi-threading contention
                 for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
                     if !batch.is_empty() {
-                        node.process_batch(batch, self.is_training);
+                        node.process_batch(batch, lr);
                     }
                 }
             } else {
@@ -174,7 +179,7 @@ impl ANNPModel {
                         let node_addr = node as *mut MicroBlockNode as usize;
                         let batch_ptr = batch as *mut Vec<Particle> as usize;
 
-                        let is_train = self.is_training;
+                        let current_lr = lr;
                         let _handle = dtact::spawn(async move {
                             #[cfg(target_arch = "x86_64")]
                             unsafe {
@@ -202,7 +207,7 @@ impl ANNPModel {
                             let b_ptr = batch_ptr as *mut Vec<Particle>;
                             let c_ptr = counter_ptr as *const AtomicUsize;
                             unsafe {
-                                (*node_ptr).process_batch(&mut *b_ptr, is_train);
+                                (*node_ptr).process_batch(&mut *b_ptr, current_lr);
                                 (*c_ptr).fetch_sub(1, Ordering::Release);
                             }
                         });

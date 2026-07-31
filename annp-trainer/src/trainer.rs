@@ -32,7 +32,7 @@ impl Trainer {
         // Feed tokens sequentially to allow temporal difference learning to emerge from the particle flow
         for i in 0..full_seq_len {
             let single_token = input_embeddings.narrow(0, i, 1)?;
-            let (_, step_loss) = model.forward(&single_token, i)?;
+            let (_, step_loss) = model.forward(&single_token, i, Some(self.base_lr))?;
             final_seq_loss = step_loss; // model.forward returns the cumulative average loss across all nodes
         }
 

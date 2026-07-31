@@ -14,6 +14,6 @@ subnode_max = 8
 
 [train]
 epochs = 64
-learning_rate = 0.02
+learning_rate = 0.0002
 dataset_path = "stage_1_1-32001.json"
 dataset_format = "json"
