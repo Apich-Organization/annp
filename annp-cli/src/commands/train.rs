@@ -130,25 +130,42 @@ pub fn execute_train(
         );
     }
 
+    let (mut stream, total_batches) =
+        DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
+    let batches_per_epoch = (total_batches / train_epochs).max(1);
+
+    logger.log(
+        "DATASET",
+        &format!(
+            "Loaded dataset from: {} ({}). Total batches: {}, Batches per epoch: {}",
+            dataset_path, format_str, total_batches, batches_per_epoch
+        ),
+    );
+
     for epoch in epoch_start_val..train_epochs {
         logger.log(
             "EPOCH",
-            &format!(
-                "Streaming dataset from: {} ({}) [Epoch {}/{}]",
-                dataset_path,
-                format_str,
-                epoch + 1,
-                train_epochs
-            ),
+            &format!("Starting [Epoch {}/{}]", epoch + 1, train_epochs),
         );
 
-        let stream = DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
         let mut epoch_loss_sum = 0.0f32;
         let mut step_count = 0;
         let mut rolling_ema = 0.0f32;
         let mut epoch_metrics_acc = annp_model::BatchMetrics::default();
 
-        for (batch_idx, res) in stream.enumerate() {
+        for batch_idx in 0..batches_per_epoch {
+            let res = match stream.next() {
+                Some(r) => r,
+                None => {
+                    if batch_idx == 0 {
+                        println!(
+                            "Warning: No more batches left in stream for epoch {}",
+                            epoch + 1
+                        );
+                    }
+                    break;
+                }
+            };
             let tensor = res?;
             let mut trainer = Trainer::new(train_lr);
             let step_loss = trainer.train_step_with_epoch(&mut model, &tensor, epoch)?;

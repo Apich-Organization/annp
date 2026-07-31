@@ -102,7 +102,7 @@ impl DatasetStream {
         format: DatasetFormat,
         d_model: usize,
         device: &Device,
-    ) -> Result<Self> {
+    ) -> Result<(Self, usize)> {
         let p = path.as_ref();
         if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
             if let Ok((chunk_paths, _total_count)) = json_parser::split_and_cache_dataset(p, 8192) {
@@ -115,7 +115,7 @@ impl DatasetStream {
                     device: device.clone(),
                 };
                 let _ = stream.load_next_chunk()?;
-                return Ok(stream);
+                return Ok((stream, _total_count));
             }
         } else if matches!(format, DatasetFormat::Csv) && p.exists() {
             if let Ok((chunk_paths, _total_count)) = csv_parser::split_and_cache_dataset(p, 8192) {
@@ -128,7 +128,7 @@ impl DatasetStream {
                     device: device.clone(),
                 };
                 let _ = stream.load_next_chunk()?;
-                return Ok(stream);
+                return Ok((stream, _total_count));
             }
         } else if matches!(format, DatasetFormat::Sqlite)
             && p.exists()
@@ -143,11 +143,12 @@ impl DatasetStream {
                 device: device.clone(),
             };
             let _ = stream.load_next_chunk()?;
-            return Ok(stream);
+            return Ok((stream, _total_count));
         }
 
         let batches = load_dataset(path, format, d_model, device)?;
-        Ok(Self::Buffered { batches, cursor: 0 })
+        let total = batches.len();
+        Ok((Self::Buffered { batches, cursor: 0 }, total))
     }
 
     fn load_next_chunk(&mut self) -> Result<bool> {
