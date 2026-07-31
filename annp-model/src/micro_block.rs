@@ -285,6 +285,11 @@ impl MicroBlockNode {
             return;
         }
 
+        let trace_decay = 1.0 - 1.0 / (self.max_kv_len as f32).max(1.0);
+        for trace in self.kv_traces.iter_mut() {
+            *trace *= trace_decay;
+        }
+
         let d_head = self.config.d_head;
         let ffn_dim = d_head * self.config.ffn_expansion;
 

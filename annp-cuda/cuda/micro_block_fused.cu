@@ -302,7 +302,7 @@ __global__ void fused_micro_block_backward_kernel(
     // Only handles 1 block for the single token (batch_size=1)
     if (blockIdx.x != 0) return;
     int tid = threadIdx.x;
-    float max_grad = 0.05f;
+    float max_grad = rsqrtf((float)d_head);
     float wd_factor = 1.0f - lr * weight_decay;
 
     int max_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
@@ -343,7 +343,7 @@ __global__ void fused_micro_block_backward_kernel(
     // 2. Flash Attention
     if (kv_len > 0) {
         float best_sim = -1e9f;
-        float scale = rsqrtf((float)d_head);
+        float scale = rsqrtf((float)d_head) * inv_rms_attn;
         
         // Compute best_sim
         for (int i = 0; i < kv_len; i++) {

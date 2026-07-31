@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 5;
+const ANNPB_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
@@ -26,6 +26,14 @@ pub struct NodeCheckpoint {
     pub cumulative_sequence_len: u64,
     pub activation_count: u64,
     pub subnodes: Vec<SubnodeCheckpoint>,
+    pub k_cache: Vec<f32>,
+    pub v_cache: Vec<f32>,
+    pub kv_traces: Vec<f32>,
+    pub kv_token_ids: Vec<u32>,
+    pub kv_shard_ids: Vec<u16>,
+    pub last_p_in: Vec<f32>,
+    pub last_prediction: Vec<f32>,
+    pub last_token_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +110,46 @@ impl ModelCheckpoint {
             file.write_all(&node.split_count.to_le_bytes())?;
             file.write_all(&node.cumulative_sequence_len.to_le_bytes())?;
             file.write_all(&node.activation_count.to_le_bytes())?;
+
+            let write_f32_vec = |f: &mut File,
+                                 v: &Vec<f32>|
+             -> Result<(), Box<dyn std::error::Error>> {
+                f.write_all(&(v.len() as u32).to_le_bytes())?;
+                if !v.is_empty() {
+                    let b =
+                        unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 4) };
+                    f.write_all(b)?;
+                }
+                Ok(())
+            };
+            write_f32_vec(&mut file, &node.k_cache)?;
+            write_f32_vec(&mut file, &node.v_cache)?;
+            write_f32_vec(&mut file, &node.kv_traces)?;
+
+            file.write_all(&(node.kv_token_ids.len() as u32).to_le_bytes())?;
+            if !node.kv_token_ids.is_empty() {
+                let b = unsafe {
+                    std::slice::from_raw_parts(
+                        node.kv_token_ids.as_ptr() as *const u8,
+                        node.kv_token_ids.len() * 4,
+                    )
+                };
+                file.write_all(b)?;
+            }
+            file.write_all(&(node.kv_shard_ids.len() as u32).to_le_bytes())?;
+            if !node.kv_shard_ids.is_empty() {
+                let b = unsafe {
+                    std::slice::from_raw_parts(
+                        node.kv_shard_ids.as_ptr() as *const u8,
+                        node.kv_shard_ids.len() * 2,
+                    )
+                };
+                file.write_all(b)?;
+            }
+            write_f32_vec(&mut file, &node.last_p_in)?;
+            write_f32_vec(&mut file, &node.last_prediction)?;
+            file.write_all(&node.last_token_id.unwrap_or(u32::MAX).to_le_bytes())?;
+
             file.write_all(&(node.subnodes.len() as u32).to_le_bytes())?;
 
             for sub in &node.subnodes {
@@ -212,6 +260,74 @@ impl ModelCheckpoint {
                 file.read_exact(&mut buf8)?;
                 let activation_count = u64::from_le_bytes(buf8);
 
+                let mut k_cache = Vec::new();
+                let mut v_cache = Vec::new();
+                let mut kv_traces = Vec::new();
+                let mut kv_token_ids = Vec::new();
+                let mut kv_shard_ids = Vec::new();
+                let mut last_p_in = Vec::new();
+                let mut last_prediction = Vec::new();
+                let mut last_token_id = None;
+
+                if version >= 6 {
+                    let read_f32_vec =
+                        |file: &mut File,
+                         buf4: &mut [u8; 4]|
+                         -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+                            file.read_exact(buf4)?;
+                            let len = u32::from_le_bytes(*buf4) as usize;
+                            let mut vec = vec![0.0f32; len];
+                            if len > 0 {
+                                let bytes = unsafe {
+                                    std::slice::from_raw_parts_mut(
+                                        vec.as_mut_ptr() as *mut u8,
+                                        len * 4,
+                                    )
+                                };
+                                file.read_exact(bytes)?;
+                            }
+                            Ok(vec)
+                        };
+                    k_cache = read_f32_vec(&mut file, &mut buf4)?;
+                    v_cache = read_f32_vec(&mut file, &mut buf4)?;
+                    kv_traces = read_f32_vec(&mut file, &mut buf4)?;
+
+                    file.read_exact(&mut buf4)?;
+                    let len = u32::from_le_bytes(buf4) as usize;
+                    kv_token_ids = vec![0u32; len];
+                    if len > 0 {
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                kv_token_ids.as_mut_ptr() as *mut u8,
+                                len * 4,
+                            )
+                        };
+                        file.read_exact(bytes)?;
+                    }
+
+                    file.read_exact(&mut buf4)?;
+                    let len = u32::from_le_bytes(buf4) as usize;
+                    kv_shard_ids = vec![0u16; len];
+                    if len > 0 {
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                kv_shard_ids.as_mut_ptr() as *mut u8,
+                                len * 2,
+                            )
+                        };
+                        file.read_exact(bytes)?;
+                    }
+
+                    last_p_in = read_f32_vec(&mut file, &mut buf4)?;
+                    last_prediction = read_f32_vec(&mut file, &mut buf4)?;
+
+                    file.read_exact(&mut buf4)?;
+                    let l_tid = u32::from_le_bytes(buf4);
+                    if l_tid != u32::MAX {
+                        last_token_id = Some(l_tid);
+                    }
+                }
+
                 file.read_exact(&mut buf4)?;
                 let num_subnodes = u32::from_le_bytes(buf4) as usize;
                 let mut subnodes = Vec::with_capacity(num_subnodes);
@@ -278,6 +394,14 @@ impl ModelCheckpoint {
                     cumulative_sequence_len,
                     activation_count,
                     subnodes,
+                    k_cache,
+                    v_cache,
+                    kv_traces,
+                    kv_token_ids,
+                    kv_shard_ids,
+                    last_p_in,
+                    last_prediction,
+                    last_token_id,
                 });
             }
         } else {
@@ -342,6 +466,14 @@ impl ModelCheckpoint {
                     cumulative_sequence_len,
                     activation_count,
                     subnodes: vec![primary_subnode],
+                    k_cache: Vec::new(),
+                    v_cache: Vec::new(),
+                    kv_traces: Vec::new(),
+                    kv_token_ids: Vec::new(),
+                    kv_shard_ids: Vec::new(),
+                    last_p_in: Vec::new(),
+                    last_prediction: Vec::new(),
+                    last_token_id: None,
                 });
             }
         }
@@ -410,6 +542,15 @@ impl ModelCheckpoint {
                 node.cumulative_sequence_len = node_ckpt.cumulative_sequence_len;
                 node.activation_count = node_ckpt.activation_count;
 
+                node.k_cache.clone_from(&node_ckpt.k_cache);
+                node.v_cache.clone_from(&node_ckpt.v_cache);
+                node.kv_traces.clone_from(&node_ckpt.kv_traces);
+                node.kv_token_ids.clone_from(&node_ckpt.kv_token_ids);
+                node.kv_shard_ids.clone_from(&node_ckpt.kv_shard_ids);
+                node.last_p_in.clone_from(&node_ckpt.last_p_in);
+                node.last_prediction.clone_from(&node_ckpt.last_prediction);
+                node.last_token_id = node_ckpt.last_token_id;
+
                 let use_cuda = node.use_cuda;
                 node.subnodes = node_ckpt
                     .subnodes
@@ -473,6 +614,14 @@ impl ModelCheckpoint {
                         credit_stats: s.credit_stats,
                     })
                     .collect(),
+                k_cache: n.k_cache.clone(),
+                v_cache: n.v_cache.clone(),
+                kv_traces: n.kv_traces.clone(),
+                kv_token_ids: n.kv_token_ids.clone(),
+                kv_shard_ids: n.kv_shard_ids.clone(),
+                last_p_in: n.last_p_in.clone(),
+                last_prediction: n.last_prediction.clone(),
+                last_token_id: n.last_token_id,
             })
             .collect();
 
