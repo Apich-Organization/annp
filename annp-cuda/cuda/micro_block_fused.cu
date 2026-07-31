@@ -117,7 +117,7 @@ extern "C" __global__ void fused_micro_block_kernel(
                 s_reduce[max_warps_pad + i] = e;
                 sum_exp += e;
             }
-            s_reduce[0] = 1.0f / (sum_exp + 1e-8f);
+            s_reduce[0] = __fdividef(1.0f, sum_exp + 1e-8f);
         }
         __syncthreads();
 
@@ -153,7 +153,7 @@ extern "C" __global__ void fused_micro_block_kernel(
             gate += m_val * __ldg(w_gate + d * ffn_dim + j);
             up   += m_val * __ldg(w_up + d * ffn_dim + j);
         }
-        float sig = 1.0f / (1.0f + __expf(-gate));
+        float sig = __fdividef(1.0f, 1.0f + __expf(-gate));
         float swish = gate * sig;
         s_ffn_inter[j] = swish * up;
     }
@@ -328,14 +328,14 @@ __global__ void fused_micro_block_backward_kernel(
     // 1. RMSNorm of p_in
     float sq_sum = 0.0f;
     for (int i = tid; i < d_head; i += blockDim.x) {
-        float v = p_in[i];
+        float v = __ldg(p_in + i);
         sq_sum += v * v;
     }
     sq_sum = block_reduce_sum(sq_sum, s_reduce);
     float inv_rms_attn = rsqrtf(sq_sum / d_head + 1e-8f);
 
     for (int i = tid; i < d_head; i += blockDim.x) {
-        s_p_in_normed[i] = p_in[i] * inv_rms_attn;
+        s_p_in_normed[i] = __ldg(p_in + i) * inv_rms_attn;
         s_attn[i] = 0.0f;
     }
     __syncthreads();
@@ -373,11 +373,11 @@ __global__ void fused_micro_block_backward_kernel(
             float sum_exp = 0.0f;
             if (tid == 0) {
                 for (int i = 0; i < kv_len; i++) {
-                    float e = expf(s_reduce[max_warps_pad + i] - best_sim);
+                    float e = __expf(s_reduce[max_warps_pad + i] - best_sim);
                     s_reduce[max_warps_pad + i] = e;
                     sum_exp += e;
                 }
-                s_reduce[0] = 1.0f / (sum_exp + 1e-8f);
+                s_reduce[0] = __fdividef(1.0f, sum_exp + 1e-8f);
             }
             __syncthreads();
 
@@ -396,7 +396,7 @@ __global__ void fused_micro_block_backward_kernel(
     // 3. RMSNorm of mid
     float sq_sum_mid = 0.0f;
     for (int d = tid; d < d_head; d += blockDim.x) {
-        float val = p_in[d] + alpha * s_attn[d];
+        float val = __ldg(p_in + d) + alpha * s_attn[d];
         s_mid[d] = val;
         sq_sum_mid += val * val;
     }
@@ -417,7 +417,7 @@ __global__ void fused_micro_block_backward_kernel(
             gate += m_val * w_gate[d * ffn_dim + f];
             up += m_val * w_up[d * ffn_dim + f];
         }
-        float sig = 1.0f / (1.0f + expf(-gate));
+        float sig = __fdividef(1.0f, 1.0f + __expf(-gate));
         float swish = gate * sig;
 
         s_gate[f] = gate;
@@ -444,7 +444,7 @@ __global__ void fused_micro_block_backward_kernel(
         float d_up_val = d_int * s_swish[f];
 
         float gate = s_gate[f];
-        float sig = 1.0f / (1.0f + expf(-gate));
+        float sig = __fdividef(1.0f, 1.0f + __expf(-gate));
         float d_sig_d_gate = sig * (1.0f - sig);
         float d_swish_d_gate = sig + gate * d_sig_d_gate;
 
