@@ -79,12 +79,38 @@ impl AnnpLogger {
         batch_idx: usize,
         step_loss: f32,
         rolling_loss: f32,
+        metrics: &annp_model::BatchMetrics,
     ) {
         let msg = format!(
-            "[Epoch {:2}/{:2} | Batch {:4}] Step Loss: {:.6} | Rolling Loss: {:.6}",
-            epoch, total_epochs, batch_idx, step_loss, rolling_loss
+            "[Epoch {:2}/{:2} | Batch {:4}] Loss: {:.5} (EMA: {:.5}) | Halt: {:.1}% | Gini: {:.3} | Hops: {:.2}",
+            epoch, total_epochs, batch_idx, step_loss, rolling_loss,
+            metrics.early_halting_rate * 100.0,
+            metrics.utilization_gini,
+            metrics.avg_hop_count
         );
         self.log("TRAIN_STEP", &msg);
+    }
+
+    pub fn log_epoch_summary(
+        &self,
+        epoch: usize,
+        total_epochs: usize,
+        avg_loss: f32,
+        metrics: &annp_model::BatchMetrics,
+    ) {
+        let msg = format!(
+            "Epoch {}/{} Metrics Summary:\n  - Avg Loss: {:.6}\n  - Avg Hop Count: {:.3}\n  - Early Halting Rate: {:.2}%\n  - Signal Energy (var): {:.5}\n  - Node Util Gini: {:.4}\n  - Attention Entropy: {:.4}\n  - Avg Active Subnodes: {:.2}\n  - Credit Volatility: {:.5}\n  - Mean Temporal Affinity: {:.4}",
+            epoch, total_epochs, avg_loss,
+            metrics.avg_hop_count,
+            metrics.early_halting_rate * 100.0,
+            metrics.avg_signal_energy,
+            metrics.utilization_gini,
+            metrics.avg_attention_entropy,
+            metrics.avg_subnodes,
+            metrics.avg_credit_volatility,
+            metrics.avg_temporal_affinity
+        );
+        self.log("EPOCH_SUMMARY", &msg);
     }
 
     pub fn log_hardening(

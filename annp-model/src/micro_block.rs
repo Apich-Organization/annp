@@ -1,6 +1,6 @@
 use crate::subnode::Subnode;
 use annp_core::{MicroBlockConfig, Particle};
-use annp_cuda::CudaMicroBlockRunner;
+use annp_cuda;
 
 /// Autonomous Micro-Block Node (Container holding 1 to subnode_max Subnodes).
 #[repr(align(128))]
@@ -35,6 +35,15 @@ pub struct MicroBlockNode {
     /// The currently selected local expert.  Neurogenesis is meaningful only
     /// when newly spawned subnodes can participate in subsequent dynamics.
     pub active_subnode: usize,
+    // Research Metrics
+    pub sum_hop_count: u64,
+    pub halted_particles_count: u64,
+    pub sum_squared_energy: f32,
+    pub total_particles_processed: u64,
+    pub sum_attention_entropy: f32,
+    pub attention_ops_count: u64,
+    pub sum_credit_volatility: f32,
+    pub sum_temporal_affinity: f32,
 }
 
 impl MicroBlockNode {
@@ -85,6 +94,14 @@ impl MicroBlockNode {
             p_out_buf: Vec::with_capacity(64 * d_head),
             use_cuda,
             active_subnode: 0,
+            sum_hop_count: 0,
+            halted_particles_count: 0,
+            sum_squared_energy: 0.0,
+            total_particles_processed: 0,
+            sum_attention_entropy: 0.0,
+            attention_ops_count: 0,
+            sum_credit_volatility: 0.0,
+            sum_temporal_affinity: 0.0,
         };
         node.sync_cuda_weights();
         node
@@ -219,12 +236,14 @@ impl MicroBlockNode {
         old_len - self.subnodes.len()
     }
 
-    fn local_agreement(&self, particle: &Particle, payload: &[f32]) -> Option<f32> {
+    fn local_agreement(&self, particle: &Particle, payload: &[f32]) -> (Option<f32>, f32) {
         let d_head = self.config.d_head;
         let payload_norm = payload.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
         let mut best_positive = None::<f32>;
         let mut negative_sum = 0.0;
         let mut negative_count = 0u32;
+        let mut temporal_affinity_sum = 0.0;
+        let mut temporal_affinity_count = 0u32;
         for (index, key) in self.k_cache.chunks_exact(d_head).enumerate() {
             let key_norm = key.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
             let similarity = payload.iter().zip(key).map(|(a, b)| a * b).sum::<f32>()
@@ -242,12 +261,20 @@ impl MicroBlockNode {
                 let effective_sim = similarity * temporal_affinity;
                 best_positive =
                     Some(best_positive.map_or(effective_sim, |best| best.max(effective_sim)));
+                temporal_affinity_sum += temporal_affinity;
+                temporal_affinity_count += 1;
             } else {
                 negative_sum += similarity;
                 negative_count += 1;
             }
         }
-        best_positive.map(|positive| positive - negative_sum / negative_count.max(1) as f32)
+        let agreement = best_positive.map(|positive| positive - negative_sum / negative_count.max(1) as f32);
+        let mean_ta = if temporal_affinity_count > 0 {
+            temporal_affinity_sum / temporal_affinity_count as f32
+        } else {
+            0.0
+        };
+        (agreement, mean_ta)
     }
 
     /// Process a batch of particles through Micro-Block CUDA/CPU computation pipeline (0 heap allocations)
@@ -338,13 +365,19 @@ impl MicroBlockNode {
                         }
 
                         let inv_sum = 1.0 / (sum_exp + 1e-8);
+                        let mut entropy = 0.0f32;
                         for i in 0..backprop_kv_len {
                             let w = scores[i] * inv_sum;
+                            if w > 1e-10 {
+                                entropy -= w * w.ln();
+                            }
                             let v_slice = &self.v_cache[i * d_head..(i + 1) * d_head];
                             for d in 0..d_head {
                                 attn_out[d] += w * v_slice[d];
                             }
                         }
+                        self.sum_attention_entropy += entropy;
+                        self.attention_ops_count += 1;
                     }
 
                     for subnode in self.subnodes.iter_mut() {
@@ -523,7 +556,7 @@ impl MicroBlockNode {
         let p_clone = particles[0].clone();
 
         for p_ref in particles.iter_mut() {
-            let agreement_before = self.local_agreement(p_ref, &p_ref.payload);
+            let (agreement_before, ta_before) = self.local_agreement(p_ref, &p_ref.payload);
             let previous_credit = p_ref.credit;
             let previous_credit_valid = p_ref.credit_valid;
 
@@ -533,14 +566,16 @@ impl MicroBlockNode {
             }
             p_ref.credit_valid = false;
 
-            if let (Some(before), Some(after)) = (
-                agreement_before,
-                self.local_agreement(p_ref, &p_ref.payload),
-            ) {
+            let (agreement_after, ta_after) = self.local_agreement(p_ref, &p_ref.payload);
+            self.sum_temporal_affinity += (ta_before + ta_after) * 0.5;
+
+            if let (Some(before), Some(after)) = (agreement_before, agreement_after) {
                 p_ref.credit = after - before;
                 p_ref.credit_valid = true;
                 self.subnodes[active].credit_stats.observe(p_ref.credit);
+                self.sum_credit_volatility += p_ref.credit.abs();
             }
+            
             p_ref.header.step_hop(self.config.max_hop);
 
             if !p_ref.header.halted
@@ -551,6 +586,15 @@ impl MicroBlockNode {
             {
                 p_ref.header.halted = true;
             }
+
+            self.total_particles_processed += 1;
+            if p_ref.header.halted {
+                self.halted_particles_count += 1;
+            }
+            self.sum_hop_count += p_ref.header.hop_count as u64;
+
+            let energy: f32 = p_ref.payload.iter().map(|&x| x * x).sum();
+            self.sum_squared_energy += energy;
         }
 
         self.update_kv_cache(&p_clone);
@@ -560,6 +604,44 @@ impl MicroBlockNode {
         self.cumulative_sequence_len += batch_size as u64;
         self.subnodes[active].activation_count += batch_size as u64;
     }
+
+    /// Extract current research metrics and reset node-local accumulators
+    pub fn extract_and_reset_metrics(&mut self) -> NodeMetrics {
+        let metrics = NodeMetrics {
+            sum_hop_count: self.sum_hop_count,
+            halted_particles_count: self.halted_particles_count,
+            sum_squared_energy: self.sum_squared_energy,
+            total_particles_processed: self.total_particles_processed,
+            sum_attention_entropy: self.sum_attention_entropy,
+            attention_ops_count: self.attention_ops_count,
+            sum_credit_volatility: self.sum_credit_volatility,
+            sum_temporal_affinity: self.sum_temporal_affinity,
+            active_subnodes_count: self.subnodes.len() as u64,
+        };
+
+        self.sum_hop_count = 0;
+        self.halted_particles_count = 0;
+        self.sum_squared_energy = 0.0;
+        self.total_particles_processed = 0;
+        self.sum_attention_entropy = 0.0;
+        self.attention_ops_count = 0;
+        self.sum_credit_volatility = 0.0;
+        self.sum_temporal_affinity = 0.0;
+
+        metrics
+    }
+}
+
+pub struct NodeMetrics {
+    pub sum_hop_count: u64,
+    pub halted_particles_count: u64,
+    pub sum_squared_energy: f32,
+    pub total_particles_processed: u64,
+    pub sum_attention_entropy: f32,
+    pub attention_ops_count: u64,
+    pub sum_credit_volatility: f32,
+    pub sum_temporal_affinity: f32,
+    pub active_subnodes_count: u64,
 }
 
 #[cfg(test)]

@@ -146,13 +146,26 @@ pub fn execute_train(
         let mut epoch_loss_sum = 0.0f32;
         let mut step_count = 0;
         let mut rolling_ema = 0.0f32;
+        let mut epoch_metrics_acc = annp_model::BatchMetrics::default();
 
         for (batch_idx, res) in stream.enumerate() {
             let tensor = res?;
             let mut trainer = Trainer::new(train_lr);
             let step_loss = trainer.train_step_with_epoch(&mut model, &tensor, epoch)?;
+            let batch_metrics = model.extract_batch_metrics();
 
             epoch_loss_sum += step_loss;
+            
+            // Accumulate metrics for epoch summary
+            epoch_metrics_acc.avg_hop_count += batch_metrics.avg_hop_count;
+            epoch_metrics_acc.early_halting_rate += batch_metrics.early_halting_rate;
+            epoch_metrics_acc.avg_signal_energy += batch_metrics.avg_signal_energy;
+            epoch_metrics_acc.avg_subnodes += batch_metrics.avg_subnodes;
+            epoch_metrics_acc.utilization_gini += batch_metrics.utilization_gini;
+            epoch_metrics_acc.avg_attention_entropy += batch_metrics.avg_attention_entropy;
+            epoch_metrics_acc.avg_credit_volatility += batch_metrics.avg_credit_volatility;
+            epoch_metrics_acc.avg_temporal_affinity += batch_metrics.avg_temporal_affinity;
+            
             step_count += 1;
 
             rolling_ema = if step_count == 1 {
@@ -168,20 +181,23 @@ pub fn execute_train(
                     batch_idx + 1,
                     step_loss,
                     rolling_ema,
+                    &batch_metrics,
                 );
             }
         }
 
         let avg_epoch_loss = epoch_loss_sum / step_count.max(1) as f32;
-        logger.log(
-            "EPOCH_END",
-            &format!(
-                "Epoch {}/{} Complete. Average Loss: {:.6}",
-                epoch + 1,
-                train_epochs,
-                avg_epoch_loss
-            ),
-        );
+        let sc = step_count.max(1) as f32;
+        epoch_metrics_acc.avg_hop_count /= sc;
+        epoch_metrics_acc.early_halting_rate /= sc;
+        epoch_metrics_acc.avg_signal_energy /= sc;
+        epoch_metrics_acc.avg_subnodes /= sc;
+        epoch_metrics_acc.utilization_gini /= sc;
+        epoch_metrics_acc.avg_attention_entropy /= sc;
+        epoch_metrics_acc.avg_credit_volatility /= sc;
+        epoch_metrics_acc.avg_temporal_affinity /= sc;
+
+        logger.log_epoch_summary(epoch + 1, train_epochs, avg_epoch_loss, &epoch_metrics_acc);
 
         // Save intermediate checkpoint (.annpb binary or .json)
         let ckpt = ModelCheckpoint::extract_from_model(&model, 0, epoch);
