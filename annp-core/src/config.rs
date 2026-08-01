@@ -22,6 +22,10 @@ pub struct MicroBlockConfig {
     pub subnode_max: usize,
     /// L2 Weight decay factor for optimization (default: 1e-4)
     pub weight_decay: f32,
+    /// Ratio of nodes to serve as ingress points for scattered particles (default: 0.1)
+    pub ingress_ratio: f32,
+    /// Number of neighbors for topology routing (default: 4)
+    pub k_neighbors: usize,
 }
 
 impl Default for MicroBlockConfig {
@@ -37,6 +41,8 @@ impl Default for MicroBlockConfig {
             min_hop: 10,
             subnode_max: 8,
             weight_decay: 1e-4,
+            ingress_ratio: 0.1,
+            k_neighbors: 4,
         }
     }
 }

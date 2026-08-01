@@ -72,11 +72,11 @@ impl ANNPModel {
         init_dtact_runtime();
 
         let d_head = config.d_head;
-        let scattering = TokenScattering::new(num_shards, d_head, 0.1);
-        let topology = TopologyGrid::new(num_nodes, d_head, 4);
+        let scattering = TokenScattering::new(num_shards, d_head, config.ingress_ratio);
+        let topology = TopologyGrid::new(num_nodes, d_head, config.k_neighbors);
 
         let nodes = (0..num_nodes)
-            .map(|i| MicroBlockNode::new(i, config.clone(), 64, use_cuda))
+            .map(|i| MicroBlockNode::new(i, config.clone(), use_cuda))
             .collect();
 
         let node_queues = vec![Vec::with_capacity(64); num_nodes];
@@ -97,11 +97,11 @@ impl ANNPModel {
 
     pub fn reset_state(&mut self) {
         for node in self.nodes.iter_mut() {
-            node.k_cache.clear();
-            node.v_cache.clear();
-            node.kv_traces.clear();
-            node.kv_token_ids.clear();
-            node.kv_shard_ids.clear();
+            node.last_token_id = None;
+            node.p_in_buf.clear();
+            node.p_out_buf.clear();
+            // Fast weights are NOT cleared on state reset, as they represent learned memory,
+            // but we might want to decay them or leave them. For now, leave them alone.
             node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
             node.recent_activation_count = 0;
             node.local_loss_accumulator = 0.0;
@@ -396,6 +396,8 @@ mod tests {
             min_hop: 5,
             subnode_max: 8,
             weight_decay: 1e-4,
+            ingress_ratio: 0.1,
+            k_neighbors: 4,
         }
     }
 

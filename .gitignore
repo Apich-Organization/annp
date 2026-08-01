@@ -21,3 +21,6 @@ config_test.toml
 config_test_random.toml
 check.patch
 check.diff
+fix_tests.py
+fix_checkpoint_2.py
+fix_checkpoint.py

@@ -17,6 +17,7 @@ pub struct SubnodeCheckpoint {
     pub alpha: f32,
     pub activation_count: u64,
     pub credit_stats: OnlineStats,
+    pub health: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,11 +27,8 @@ pub struct NodeCheckpoint {
     pub cumulative_sequence_len: u64,
     pub activation_count: u64,
     pub subnodes: Vec<SubnodeCheckpoint>,
-    pub k_cache: Vec<f32>,
-    pub v_cache: Vec<f32>,
-    pub kv_traces: Vec<f32>,
-    pub kv_token_ids: Vec<u32>,
-    pub kv_shard_ids: Vec<u16>,
+    pub fast_weight: Vec<f32>,
+    pub cumulative_energy: f32,
     pub last_p_in: Vec<f32>,
     pub last_prediction: Vec<f32>,
     pub last_token_id: Option<u32>,
@@ -122,30 +120,8 @@ impl ModelCheckpoint {
                 }
                 Ok(())
             };
-            write_f32_vec(&mut file, &node.k_cache)?;
-            write_f32_vec(&mut file, &node.v_cache)?;
-            write_f32_vec(&mut file, &node.kv_traces)?;
-
-            file.write_all(&(node.kv_token_ids.len() as u32).to_le_bytes())?;
-            if !node.kv_token_ids.is_empty() {
-                let b = unsafe {
-                    std::slice::from_raw_parts(
-                        node.kv_token_ids.as_ptr() as *const u8,
-                        node.kv_token_ids.len() * 4,
-                    )
-                };
-                file.write_all(b)?;
-            }
-            file.write_all(&(node.kv_shard_ids.len() as u32).to_le_bytes())?;
-            if !node.kv_shard_ids.is_empty() {
-                let b = unsafe {
-                    std::slice::from_raw_parts(
-                        node.kv_shard_ids.as_ptr() as *const u8,
-                        node.kv_shard_ids.len() * 2,
-                    )
-                };
-                file.write_all(b)?;
-            }
+            write_f32_vec(&mut file, &node.fast_weight)?;
+            file.write_all(&node.cumulative_energy.to_le_bytes())?;
             write_f32_vec(&mut file, &node.last_p_in)?;
             write_f32_vec(&mut file, &node.last_prediction)?;
             file.write_all(&node.last_token_id.unwrap_or(u32::MAX).to_le_bytes())?;
@@ -260,17 +236,14 @@ impl ModelCheckpoint {
                 file.read_exact(&mut buf8)?;
                 let activation_count = u64::from_le_bytes(buf8);
 
-                let mut k_cache = Vec::new();
-                let mut v_cache = Vec::new();
-                let mut kv_traces = Vec::new();
-                let mut kv_token_ids = Vec::new();
-                let mut kv_shard_ids = Vec::new();
+                let mut fast_weight = Vec::new();
+                let mut cumulative_energy = 0.0f32;
                 let mut last_p_in = Vec::new();
                 let mut last_prediction = Vec::new();
                 let mut last_token_id = None;
 
-                if version >= 6 {
-                    let read_f32_vec =
+                if version >= 5 {
+                    let mut read_f32_vec =
                         |file: &mut File,
                          buf4: &mut [u8; 4]|
                          -> Result<Vec<f32>, Box<dyn std::error::Error>> {
@@ -288,35 +261,9 @@ impl ModelCheckpoint {
                             }
                             Ok(vec)
                         };
-                    k_cache = read_f32_vec(&mut file, &mut buf4)?;
-                    v_cache = read_f32_vec(&mut file, &mut buf4)?;
-                    kv_traces = read_f32_vec(&mut file, &mut buf4)?;
-
+                    fast_weight = read_f32_vec(&mut file, &mut buf4)?;
                     file.read_exact(&mut buf4)?;
-                    let len = u32::from_le_bytes(buf4) as usize;
-                    kv_token_ids = vec![0u32; len];
-                    if len > 0 {
-                        let bytes = unsafe {
-                            std::slice::from_raw_parts_mut(
-                                kv_token_ids.as_mut_ptr() as *mut u8,
-                                len * 4,
-                            )
-                        };
-                        file.read_exact(bytes)?;
-                    }
-
-                    file.read_exact(&mut buf4)?;
-                    let len = u32::from_le_bytes(buf4) as usize;
-                    kv_shard_ids = vec![0u16; len];
-                    if len > 0 {
-                        let bytes = unsafe {
-                            std::slice::from_raw_parts_mut(
-                                kv_shard_ids.as_mut_ptr() as *mut u8,
-                                len * 2,
-                            )
-                        };
-                        file.read_exact(bytes)?;
-                    }
+                    cumulative_energy = f32::from_le_bytes(buf4);
 
                     last_p_in = read_f32_vec(&mut file, &mut buf4)?;
                     last_prediction = read_f32_vec(&mut file, &mut buf4)?;
@@ -390,6 +337,7 @@ impl ModelCheckpoint {
                         alpha,
                         activation_count: sub_act_count,
                         credit_stats,
+                        health: 1.0,
                     });
                 }
 
@@ -399,11 +347,8 @@ impl ModelCheckpoint {
                     cumulative_sequence_len,
                     activation_count,
                     subnodes,
-                    k_cache,
-                    v_cache,
-                    kv_traces,
-                    kv_token_ids,
-                    kv_shard_ids,
+                    fast_weight,
+                    cumulative_energy,
                     last_p_in,
                     last_prediction,
                     last_token_id,
@@ -463,6 +408,7 @@ impl ModelCheckpoint {
                     alpha,
                     activation_count,
                     credit_stats: OnlineStats::default(),
+                    health: 1.0,
                 };
 
                 nodes.push(NodeCheckpoint {
@@ -471,11 +417,8 @@ impl ModelCheckpoint {
                     cumulative_sequence_len,
                     activation_count,
                     subnodes: vec![primary_subnode],
-                    k_cache: Vec::new(),
-                    v_cache: Vec::new(),
-                    kv_traces: Vec::new(),
-                    kv_token_ids: Vec::new(),
-                    kv_shard_ids: Vec::new(),
+                    fast_weight: Vec::new(),
+                    cumulative_energy: 0.0,
                     last_p_in: Vec::new(),
                     last_prediction: Vec::new(),
                     last_token_id: None,
@@ -522,7 +465,12 @@ impl ModelCheckpoint {
                     let mean = f32::from_le_bytes(buf4);
                     file.read_exact(&mut buf4)?;
                     let m2 = f32::from_le_bytes(buf4);
-                    edge_credit.push(OnlineStats { count: count_f32, mean, m2, gamma: 0.99 });
+                    edge_credit.push(OnlineStats {
+                        count: count_f32,
+                        mean,
+                        m2,
+                        gamma: 0.99,
+                    });
                 }
             }
 
@@ -553,11 +501,8 @@ impl ModelCheckpoint {
                 node.cumulative_sequence_len = node_ckpt.cumulative_sequence_len;
                 node.activation_count = node_ckpt.activation_count;
 
-                node.k_cache.clone_from(&node_ckpt.k_cache);
-                node.v_cache.clone_from(&node_ckpt.v_cache);
-                node.kv_traces.clone_from(&node_ckpt.kv_traces);
-                node.kv_token_ids.clone_from(&node_ckpt.kv_token_ids);
-                node.kv_shard_ids.clone_from(&node_ckpt.kv_shard_ids);
+                node.fast_weight.clone_from(&node_ckpt.fast_weight);
+                node.cumulative_energy = node_ckpt.cumulative_energy;
                 node.last_p_in.clone_from(&node_ckpt.last_p_in);
                 node.last_prediction.clone_from(&node_ckpt.last_prediction);
                 node.last_token_id = node_ckpt.last_token_id;
@@ -575,6 +520,7 @@ impl ModelCheckpoint {
                             alpha: s.alpha,
                             activation_count: s.activation_count,
                             credit_stats: s.credit_stats,
+                            health: s.health,
                             d_weights: None,
                         };
                         if use_cuda {
@@ -620,13 +566,11 @@ impl ModelCheckpoint {
                         alpha: s.alpha,
                         activation_count: s.activation_count,
                         credit_stats: s.credit_stats,
+                        health: s.health,
                     })
                     .collect(),
-                k_cache: n.k_cache.clone(),
-                v_cache: n.v_cache.clone(),
-                kv_traces: n.kv_traces.clone(),
-                kv_token_ids: n.kv_token_ids.clone(),
-                kv_shard_ids: n.kv_shard_ids.clone(),
+                fast_weight: n.fast_weight.clone(),
+                cumulative_energy: n.cumulative_energy,
                 last_p_in: n.last_p_in.clone(),
                 last_prediction: n.last_prediction.clone(),
                 last_token_id: n.last_token_id,

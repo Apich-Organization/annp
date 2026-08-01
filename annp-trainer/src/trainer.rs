@@ -58,6 +58,8 @@ mod tests {
             min_hop: 2,
             subnode_max: 8,
             weight_decay: 1e-4,
+            ingress_ratio: 0.1,
+            k_neighbors: 4,
         }
     }
 

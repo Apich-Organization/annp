@@ -127,13 +127,26 @@ impl RoutingTable {
         let best_lower = self
             .edge_credit
             .iter()
-            .map(OnlineStats::pessimistic_value)
+            .map(|stats| {
+                if stats.count <= 1.0 {
+                    f32::NEG_INFINITY
+                } else {
+                    stats.mean - stats.standard_error() * 2.0
+                }
+            })
             .fold(f32::NEG_INFINITY, f32::max);
         let keep: Vec<usize> = self
             .edge_credit
             .iter()
             .enumerate()
-            .filter_map(|(k, stats)| (stats.optimistic_value() >= best_lower).then_some(k))
+            .filter_map(|(k, stats)| {
+                let upper = if stats.count <= 1.0 {
+                    f32::INFINITY
+                } else {
+                    stats.mean + stats.standard_error() * 2.0
+                };
+                (upper >= best_lower).then_some(k)
+            })
             .collect();
         if keep.len() == n {
             return 0;

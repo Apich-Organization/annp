@@ -58,12 +58,10 @@ fn test_micro_block_node_creation() {
 
     let max_kv_len = 128;
 
-    let node = MicroBlockNode::new(0, config, max_kv_len, false);
+    let node = MicroBlockNode::new(0, config, false);
 
     assert_eq!(node.node_id, 0);
     assert_eq!(node.subnodes.len(), 1); // Only 1 primary subnode at start
-    assert_eq!(node.k_cache.capacity(), max_kv_len * 64);
-    assert_eq!(node.v_cache.capacity(), max_kv_len * 64);
 
     // Independent workspace buffer sizing
     assert_eq!(node.p_in_buf.len(), 0);

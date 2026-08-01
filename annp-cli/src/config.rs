@@ -22,6 +22,8 @@ pub struct ModelSection {
     pub max_hop: u16,
     pub min_hop: u16,
     pub norm_strategy: String, // "RMSNorm" or "SphereNorm"
+    pub ingress_ratio: Option<f32>,
+    pub k_neighbors: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +53,8 @@ impl Default for AnnpTomlConfig {
                 max_hop: 100,
                 min_hop: 3,
                 norm_strategy: "RMSNorm".to_string(),
+                ingress_ratio: Some(0.1),
+                k_neighbors: Some(4),
             },
             eviction: EvictionSection {
                 subnode_max: Some(8),
@@ -91,6 +95,8 @@ impl AnnpTomlConfig {
             min_hop: self.model.min_hop,
             subnode_max: self.eviction.subnode_max.unwrap_or(8),
             weight_decay: self.train.weight_decay.unwrap_or(1e-4),
+            ingress_ratio: self.model.ingress_ratio.unwrap_or(0.1),
+            k_neighbors: self.model.k_neighbors.unwrap_or(4),
         }
     }
 }

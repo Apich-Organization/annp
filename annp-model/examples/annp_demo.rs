@@ -18,6 +18,8 @@ fn main() -> candle_core::Result<()> {
         min_hop: 5,
         subnode_max: 8,
         weight_decay: 1e-4,
+        ingress_ratio: 0.1,
+        k_neighbors: 4,
     };
 
     let device = Device::Cpu;

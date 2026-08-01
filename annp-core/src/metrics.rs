@@ -54,13 +54,6 @@ impl OnlineStats {
         }
     }
 
-    pub fn optimistic_value(&self) -> f32 {
-        self.mean + self.standard_error()
-    }
-    pub fn pessimistic_value(&self) -> f32 {
-        self.mean - self.standard_error()
-    }
-
     pub fn decay(&mut self) {
         self.count *= self.gamma;
         self.m2 *= self.gamma;
@@ -77,7 +70,7 @@ pub fn student_t_sample_approximation(df: f32) -> f32 {
     if df < 1.0 {
         return z0; // Fallback
     }
-    
+
     // Cornish-Fisher expansion for heavier tails of Student-t
     z0 * (1.0 + (z0 * z0 + 1.0) / (4.0 * df))
 }

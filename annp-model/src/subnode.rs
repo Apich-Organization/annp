@@ -13,6 +13,7 @@ pub struct Subnode {
     /// Empirical local credit; reset on checkpoint restore because it is an
     /// online decision aid, not model knowledge.
     pub credit_stats: OnlineStats,
+    pub health: f32, // Darwinian cellular health
     pub d_weights: Option<CudaDeviceWeights>,
 }
 
@@ -26,13 +27,20 @@ impl Clone for Subnode {
             alpha: self.alpha,
             activation_count: self.activation_count,
             credit_stats: self.credit_stats,
+            health: self.health,
             d_weights: None, // Will be initialized by the model
         }
     }
 }
 
 impl Subnode {
-    pub fn new_random(subnode_id: usize, d_head: usize, ffn_dim: usize, alpha_init: f32, gamma: f32) -> Self {
+    pub fn new_random(
+        subnode_id: usize,
+        d_head: usize,
+        ffn_dim: usize,
+        alpha_init: f32,
+        gamma: f32,
+    ) -> Self {
         let mut rng = rand::rng();
         let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
 
@@ -56,6 +64,7 @@ impl Subnode {
             alpha: alpha_init,
             activation_count: 0,
             credit_stats: OnlineStats::new(gamma),
+            health: 1.0,
             d_weights: None,
         }
     }
@@ -92,6 +101,7 @@ impl Subnode {
             alpha: parent.alpha,
             activation_count: 0,
             credit_stats: OnlineStats::new(gamma),
+            health: 1.0,
             d_weights: None,
         }
     }
