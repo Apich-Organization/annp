@@ -247,4 +247,3 @@ extern "C" void launch_fused_micro_block(
 
     copy_back_if_host(p_out, dev_pout, batch_size * d_head, stream);
 }
-__global__ void fused_micro_block_backward_kernel(
