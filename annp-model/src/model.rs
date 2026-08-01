@@ -142,7 +142,7 @@ impl ANNPModel {
             Vec::with_capacity(seq_len * self.scattering.num_shards);
         let mut active_loop = true;
         let mut step = 0;
-        let max_steps = self.config.max_hop as usize + 20;
+        let max_steps = self.config.max_hop as usize + self.config.step_safety_margin as usize;
 
         let mut curr_batches: Vec<Vec<Particle>> = vec![Vec::with_capacity(64); self.num_nodes];
 
@@ -238,7 +238,9 @@ impl ANNPModel {
                             self.topology.routing_tables[node_id].select_next_hop(&p);
 
                         // P2P Decentralized Backpressure: if candidate target queue is full, overflow to neighbor in local P2P mesh
-                        if self.next_queues[next_hop].len() > 64 {
+                        if self.next_queues[next_hop].len()
+                            > self.config.queue_backpressure as usize
+                        {
                             if !neighbors.is_empty() {
                                 next_hop = neighbors[p.header.hop_count as usize % neighbors.len()];
                             } else {
@@ -398,6 +400,9 @@ mod tests {
             weight_decay: 1e-4,
             ingress_ratio: 0.1,
             k_neighbors: 4,
+            health_base: 1.0,
+            queue_backpressure: 64,
+            step_safety_margin: 20,
         }
     }
 

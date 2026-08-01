@@ -149,6 +149,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cuda/common.cuh");
     println!("cargo:rerun-if-changed=cuda/micro_block_fused.cu");
     println!("cargo:rerun-if-changed=cuda/particle_router.cu");
+    println!("cargo:rustc-link-lib=stdc++");
 
     let nvcc_path_opt = find_nvcc();
     let cuda_enabled = env::var("CARGO_FEATURE_CUDA").is_ok() || nvcc_path_opt.is_some();

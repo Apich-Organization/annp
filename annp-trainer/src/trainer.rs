@@ -33,10 +33,10 @@ impl Trainer {
         for i in 0..full_seq_len {
             let single_token = input_embeddings.narrow(0, i, 1)?;
             let (_, step_loss) = model.forward(&single_token, i, Some(self.base_lr))?;
-            final_seq_loss = step_loss; // model.forward returns the cumulative average loss across all nodes
+            final_seq_loss += step_loss;
         }
 
-        Ok(final_seq_loss)
+        Ok(final_seq_loss / full_seq_len as f32)
     }
 }
 
@@ -60,6 +60,9 @@ mod tests {
             weight_decay: 1e-4,
             ingress_ratio: 0.1,
             k_neighbors: 4,
+            health_base: 1.0,
+            queue_backpressure: 64,
+            step_safety_margin: 20,
         }
     }
 

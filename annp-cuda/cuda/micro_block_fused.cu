@@ -54,8 +54,8 @@ extern "C" __global__ void fused_micro_block_kernel(
     float alpha,
     float sphere_radius
 ) {
-    if (blockIdx.x != 0) return;
     int tid = threadIdx.x;
+    int bid = blockIdx.x;
     
     extern __shared__ float s_mem[];
     float* s_p_in  = s_mem;
@@ -65,8 +65,8 @@ extern "C" __global__ void fused_micro_block_kernel(
     int max_warps_pad = ((blockDim.x + WARP_SIZE - 1) / WARP_SIZE + 3) & ~3;
     float* s_reduce = s_ffn_inter + ffn_dim;
     
-    const float* curr_p = p_in;
-    float* curr_out = p_out;
+    const float* curr_p = p_in + bid * d_head;
+    float* curr_out = p_out + bid * d_head;
 
     // Step 0: Load p_in into Shared Memory & initialize s_attn
     float sq_sum_attn = 0.0f;
@@ -91,14 +91,28 @@ extern "C" __global__ void fused_micro_block_kernel(
     }
     __syncthreads();
 
-    // Matrix-vector multiplication: fast_weight (d_head x d_head) * (s_p_in * inv_rms_attn)
-    for (int r = tid; r < d_head; r += blockDim.x) {
+    // Matrix-vector multiplication (Coalesced using Warp Reduction)
+    int lane = tid & 31;
+    int wid = tid >> 5;
+    int num_warps = (blockDim.x + WARP_SIZE - 1) / WARP_SIZE;
+
+    for (int r = wid; r < d_head; r += num_warps) {
         float sum = 0.0f;
-        for (int c = 0; c < d_head; ++c) {
+        for (int c = lane; c < d_head; c += WARP_SIZE) {
             float normed_in = s_p_in[c] * inv_rms_attn;
             sum += __ldg(fast_weight + r * d_head + c) * normed_in;
         }
-        s_attn[r] = sum;
+        
+        // Intra-warp reduction
+        unsigned int mask = __activemask();
+        #pragma unroll
+        for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+            sum += __shfl_down_sync(mask, sum, offset);
+        }
+        
+        if (lane == 0) {
+            s_attn[r] = sum;
+        }
     }
     __syncthreads();
 

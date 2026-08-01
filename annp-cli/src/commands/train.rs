@@ -134,6 +134,17 @@ pub fn execute_train(
         DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
     let batches_per_epoch = (total_batches / train_epochs).max(1);
 
+    if is_resumed && epoch_start_val > 0 {
+        let skip_batches = epoch_start_val * batches_per_epoch;
+        logger.log(
+            "RESUME",
+            &format!("Restoring data cursor: skipping {} batches.", skip_batches),
+        );
+        for _ in 0..skip_batches {
+            let _ = stream.next();
+        }
+    }
+
     logger.log(
         "DATASET",
         &format!(

@@ -91,6 +91,19 @@ pub fn parse_value_to_tensor(
         .or_else(|| val.get("tokens"))
         .and_then(|v| v.as_array())
     {
+        if let Some(first) = array.first() {
+            if !first.is_array() {
+                let ids: Vec<u32> = array
+                    .iter()
+                    .filter_map(|v| v.as_i64().map(|id| id as u32))
+                    .collect();
+                if !ids.is_empty() {
+                    let t = tokenizer.encode_ids_to_tensor(&ids, d_model, device)?;
+                    return Ok(Some(t));
+                }
+            }
+        }
+
         let mut flat = Vec::new();
         let mut seq_len = 0;
 

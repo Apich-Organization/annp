@@ -27,10 +27,10 @@ impl ParticleHeader {
         }
     }
 
-    /// Step hop counter and deduct energy delta = 1 / max_hop
-    pub fn step_hop(&mut self, max_hop: u16) {
+    /// Step hop counter and deduct energy delta = initial_energy / max_hop
+    pub fn step_hop(&mut self, initial_energy: f32, max_hop: u16) {
         self.hop_count += 1;
-        let delta_e = 1.0 / (max_hop as f32);
+        let delta_e = initial_energy / (max_hop as f32);
         self.energy = (self.energy - delta_e).max(0.0);
         if self.energy <= 0.0 || self.hop_count >= max_hop {
             self.halted = true;
@@ -88,7 +88,7 @@ mod tests {
 
         let max_hop = 10;
         for i in 1..=10 {
-            header.step_hop(max_hop);
+            header.step_hop(1.0, max_hop);
             assert_eq!(header.hop_count, i);
             if i < 10 {
                 assert!(!header.halted);

@@ -64,6 +64,7 @@ impl MicroBlockNode {
         let fast_weight = vec![0.0f32; d_head * d_head];
         let last_p_in = vec![0.0f32; d_head];
 
+        let queue_backpressure = config.queue_backpressure;
         let mut node = Self {
             node_id,
             config,
@@ -79,8 +80,8 @@ impl MicroBlockNode {
             cumulative_sequence_len: 0,
             activation_count: 0,
             recent_activation_count: 0,
-            p_in_buf: Vec::with_capacity(64 * d_head),
-            p_out_buf: Vec::with_capacity(64 * d_head),
+            p_in_buf: Vec::with_capacity(queue_backpressure * d_head),
+            p_out_buf: Vec::with_capacity(queue_backpressure * d_head),
             use_cuda,
             active_subnode: 0,
             sum_hop_count: 0,
@@ -128,7 +129,7 @@ impl MicroBlockNode {
             f32::INFINITY
         };
 
-        let health_threshold = 1.0 + self.subnodes.len() as f32;
+        let health_threshold = self.config.health_base + self.subnodes.len() as f32;
 
         if self.subnodes.len() < self.config.subnode_max
             && active.health > health_threshold
@@ -224,6 +225,24 @@ impl MicroBlockNode {
     }
 
     pub fn process_batch(&mut self, particles: &mut [Particle], learning_rate: Option<f32>) {
+        if particles.is_empty() {
+            return;
+        }
+        particles.sort_by_key(|p| p.header.origin_token_id);
+
+        let mut start = 0;
+        while start < particles.len() {
+            let current_id = particles[start].header.origin_token_id;
+            let mut end = start + 1;
+            while end < particles.len() && particles[end].header.origin_token_id == current_id {
+                end += 1;
+            }
+            self.process_sub_batch(&mut particles[start..end], learning_rate);
+            start = end;
+        }
+    }
+
+    fn process_sub_batch(&mut self, particles: &mut [Particle], learning_rate: Option<f32>) {
         let batch_size = particles.len();
         if batch_size == 0 {
             return;
@@ -263,7 +282,9 @@ impl MicroBlockNode {
                 let se = subnode.credit_stats.standard_error();
                 let df = (subnode.credit_stats.count - 1.0).max(1.0);
 
-                let t_sample = annp_core::student_t_sample_approximation(df);
+                let u1: f32 = rand::random::<f32>();
+                let u2: f32 = rand::random::<f32>();
+                let t_sample = annp_core::student_t_sample_approximation(df, u1, u2);
                 mean + se * t_sample
             };
             if score > best_score {
@@ -304,16 +325,7 @@ impl MicroBlockNode {
                         *normed = in_val * inv_rms_attn;
                     }
 
-                    let lambda = 1.0 - 1.0 / self.cumulative_energy.max(1.0).sqrt();
-                    let max_grad = 1.0 / (d_head as f32).sqrt();
-                    for r in 0..d_head {
-                        for c in 0..d_head {
-                            let idx = r * d_head + c;
-                            let grad = (local_err[r] * p_in_normed[c]).clamp(-max_grad, max_grad);
-                            self.fast_weight[idx] = self.fast_weight[idx] * lambda - lr * grad;
-                        }
-                    }
-
+                    // Forward for fast_weight
                     let mut attn_out = vec![0.0f32; d_head];
                     for r in 0..d_head {
                         let mut sum = 0.0;
@@ -323,94 +335,126 @@ impl MicroBlockNode {
                         attn_out[r] = sum;
                     }
 
+                    let subnode = &mut self.subnodes[active];
+                    let alpha = subnode.alpha;
+
+                    let mut s_mid = vec![0.0f32; d_head];
+                    for (s, (&in_val, &attn_val)) in s_mid
+                        .iter_mut()
+                        .zip(self.last_p_in.iter().zip(attn_out.iter()))
                     {
-                        let subnode = &mut self.subnodes[active];
-                        let alpha = subnode.alpha;
+                        *s = in_val + alpha * attn_val;
+                    }
 
-                        let mut s_mid = vec![0.0f32; d_head];
-                        for (s, (&in_val, &attn_val)) in s_mid
-                            .iter_mut()
-                            .zip(self.last_p_in.iter().zip(attn_out.iter()))
-                        {
-                            *s = in_val + alpha * attn_val;
-                        }
+                    let mut s_mid_normed = vec![0.0f32; d_head];
+                    let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
+                    let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
+                    for (normed, &s_val) in s_mid_normed.iter_mut().zip(s_mid.iter()) {
+                        *normed = s_val * inv_rms_ffn;
+                    }
 
-                        let mut s_mid_normed = vec![0.0f32; d_head];
-                        let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
-                        let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
-                        for (normed, &s_val) in s_mid_normed.iter_mut().zip(s_mid.iter()) {
-                            *normed = s_val * inv_rms_ffn;
-                        }
+                    let mut ffn_inter = vec![0.0f32; ffn_dim];
+                    let mut gate_arr = vec![0.0f32; ffn_dim];
+                    let mut up_arr = vec![0.0f32; ffn_dim];
+                    let mut swish_arr = vec![0.0f32; ffn_dim];
 
-                        let mut ffn_inter = vec![0.0f32; ffn_dim];
-                        let mut gate_arr = vec![0.0f32; ffn_dim];
-                        let mut up_arr = vec![0.0f32; ffn_dim];
-                        let mut swish_arr = vec![0.0f32; ffn_dim];
-
-                        for f in 0..ffn_dim {
-                            let mut gate = 0.0f32;
-                            let mut up = 0.0f32;
-                            for (d, &m_val) in s_mid_normed.iter().enumerate() {
-                                gate += m_val * subnode.w_gate[d * ffn_dim + f];
-                                up += m_val * subnode.w_up[d * ffn_dim + f];
-                            }
-
-                            let sig = 1.0 / (1.0 + (-gate).exp());
-                            let swish = gate * sig;
-
-                            gate_arr[f] = gate;
-                            up_arr[f] = up;
-                            swish_arr[f] = swish;
-                            ffn_inter[f] = swish * up;
-                        }
-
-                        let mut d_inter = vec![0.0f32; ffn_dim];
-                        for (f, inter_val) in d_inter.iter_mut().enumerate() {
-                            let mut sum = 0.0f32;
-                            for (d, &err) in local_err.iter().enumerate() {
-                                sum += err * subnode.w_down[f * d_head + d];
-                            }
-                            *inter_val = sum;
-                        }
-
-                        let mut d_gate_arr = vec![0.0f32; ffn_dim];
-                        let mut d_up_arr = vec![0.0f32; ffn_dim];
-                        for f in 0..ffn_dim {
-                            let d_int = d_inter[f];
-                            let d_swish = d_int * up_arr[f];
-                            let d_up = d_int * swish_arr[f];
-
-                            let gate = gate_arr[f];
-                            let sig = 1.0 / (1.0 + (-gate).exp());
-                            let d_sig_d_gate = sig * (1.0 - sig);
-                            let d_swish_d_gate = sig + gate * d_sig_d_gate;
-
-                            let d_gate = d_swish * d_swish_d_gate;
-                            d_gate_arr[f] = d_gate;
-                            d_up_arr[f] = d_up;
-                        }
-
-                        let max_grad = 1.0 / (d_head as f32).sqrt();
-                        for (f, &inter_val) in ffn_inter.iter().enumerate() {
-                            let w_down_slice = &mut subnode.w_down[f * d_head..(f + 1) * d_head];
-                            for (d, &err_val) in local_err.iter().enumerate() {
-                                let grad = (err_val * inter_val * alpha).clamp(-max_grad, max_grad);
-                                w_down_slice[d] = w_down_slice[d] * wd_factor - lr * grad;
-                            }
-                        }
-
+                    for f in 0..ffn_dim {
+                        let mut gate = 0.0f32;
+                        let mut up = 0.0f32;
                         for (d, &m_val) in s_mid_normed.iter().enumerate() {
-                            let w_gate_slice = &mut subnode.w_gate[d * ffn_dim..(d + 1) * ffn_dim];
-                            let w_up_slice = &mut subnode.w_up[d * ffn_dim..(d + 1) * ffn_dim];
-                            for f in 0..ffn_dim {
-                                let grad_gate =
-                                    (d_gate_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
-                                let grad_up =
-                                    (d_up_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+                            gate += m_val * subnode.w_gate[d * ffn_dim + f];
+                            up += m_val * subnode.w_up[d * ffn_dim + f];
+                        }
 
-                                w_gate_slice[f] = w_gate_slice[f] * wd_factor - lr * grad_gate;
-                                w_up_slice[f] = w_up_slice[f] * wd_factor - lr * grad_up;
-                            }
+                        let sig = 1.0 / (1.0 + (-gate).exp());
+                        let swish = gate * sig;
+
+                        gate_arr[f] = gate;
+                        up_arr[f] = up;
+                        swish_arr[f] = swish;
+                        ffn_inter[f] = swish * up;
+                    }
+
+                    let mut d_inter = vec![0.0f32; ffn_dim];
+                    for (f, inter_val) in d_inter.iter_mut().enumerate() {
+                        let mut sum = 0.0f32;
+                        for (d, &err) in local_err.iter().enumerate() {
+                            sum += err * subnode.w_down[f * d_head + d];
+                        }
+                        *inter_val = sum;
+                    }
+
+                    let mut d_gate_arr = vec![0.0f32; ffn_dim];
+                    let mut d_up_arr = vec![0.0f32; ffn_dim];
+                    for f in 0..ffn_dim {
+                        let d_int = d_inter[f];
+                        let d_swish = d_int * up_arr[f];
+                        let d_up = d_int * swish_arr[f];
+
+                        let gate = gate_arr[f];
+                        let sig = 1.0 / (1.0 + (-gate).exp());
+                        let d_sig_d_gate = sig * (1.0 - sig);
+                        let d_swish_d_gate = sig + gate * d_sig_d_gate;
+
+                        let d_gate = d_swish * d_swish_d_gate;
+                        d_gate_arr[f] = d_gate;
+                        d_up_arr[f] = d_up;
+                    }
+
+                    // Precise RMSNorm chain rule back to s_mid
+                    let mut d_s_mid_normed = vec![0.0f32; d_head];
+                    for f in 0..ffn_dim {
+                        let dg = d_gate_arr[f] * alpha;
+                        let du = d_up_arr[f] * alpha;
+                        for d in 0..d_head {
+                            d_s_mid_normed[d] += dg * subnode.w_gate[d * ffn_dim + f]
+                                + du * subnode.w_up[d * ffn_dim + f];
+                        }
+                    }
+
+                    let dot_product: f32 = d_s_mid_normed
+                        .iter()
+                        .zip(s_mid_normed.iter())
+                        .map(|(&dy, &y)| dy * y)
+                        .sum();
+                    let mut d_s_mid_total = vec![0.0f32; d_head];
+                    for d in 0..d_head {
+                        let d_s_mid_ffn = inv_rms_ffn
+                            * (d_s_mid_normed[d] - s_mid_normed[d] * dot_product / (d_head as f32));
+                        d_s_mid_total[d] = local_err[d] + d_s_mid_ffn;
+                    }
+
+                    let max_grad = 1.0 / (d_head as f32).sqrt();
+
+                    // Update fast_weight using exact chain rule gradient
+                    let lambda = 1.0 - 1.0 / self.cumulative_energy.max(1.0).sqrt();
+                    for r in 0..d_head {
+                        let d_attn_out = d_s_mid_total[r] * alpha;
+                        for c in 0..d_head {
+                            let idx = r * d_head + c;
+                            let grad = (d_attn_out * p_in_normed[c]).clamp(-max_grad, max_grad);
+                            self.fast_weight[idx] = self.fast_weight[idx] * lambda - lr * grad;
+                        }
+                    }
+
+                    for (f, &inter_val) in ffn_inter.iter().enumerate() {
+                        let w_down_slice = &mut subnode.w_down[f * d_head..(f + 1) * d_head];
+                        for (d, &err_val) in local_err.iter().enumerate() {
+                            let grad = (err_val * inter_val * alpha).clamp(-max_grad, max_grad);
+                            w_down_slice[d] = w_down_slice[d] * wd_factor - lr * grad;
+                        }
+                    }
+
+                    for (d, &m_val) in s_mid_normed.iter().enumerate() {
+                        let w_gate_slice = &mut subnode.w_gate[d * ffn_dim..(d + 1) * ffn_dim];
+                        let w_up_slice = &mut subnode.w_up[d * ffn_dim..(d + 1) * ffn_dim];
+                        for f in 0..ffn_dim {
+                            let grad_gate =
+                                (d_gate_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+                            let grad_up = (d_up_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+
+                            w_gate_slice[f] = w_gate_slice[f] * wd_factor - lr * grad_gate;
+                            w_up_slice[f] = w_up_slice[f] * wd_factor - lr * grad_up;
                         }
                     }
                 }
@@ -555,7 +599,9 @@ impl MicroBlockNode {
             valid_credit_count += 1.0;
             self.sum_credit_volatility += p_ref.credit.abs();
 
-            p_ref.header.step_hop(self.config.max_hop);
+            p_ref
+                .header
+                .step_hop(self.config.initial_energy, self.config.max_hop);
 
             if !p_ref.header.halted
                 && previous_credit_valid

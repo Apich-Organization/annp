@@ -21,7 +21,9 @@ pub struct ModelSection {
     pub initial_energy: f32,
     pub max_hop: u16,
     pub min_hop: u16,
-    pub norm_strategy: String, // "RMSNorm" or "SphereNorm"
+    pub step_safety_margin: Option<u16>,
+    pub queue_backpressure: Option<usize>,
+    pub health_base: Option<f32>,
     pub ingress_ratio: Option<f32>,
     pub k_neighbors: Option<usize>,
 }
@@ -38,6 +40,8 @@ pub struct TrainConfig {
     pub dataset_path: Option<String>,
     pub dataset_format: Option<String>,
     pub weight_decay: Option<f32>,
+    pub chunk_size: Option<usize>,
+    pub seq_len: Option<usize>,
 }
 
 impl Default for AnnpTomlConfig {
@@ -52,7 +56,9 @@ impl Default for AnnpTomlConfig {
                 initial_energy: 1.0,
                 max_hop: 100,
                 min_hop: 3,
-                norm_strategy: "RMSNorm".to_string(),
+                step_safety_margin: Some(20),
+                queue_backpressure: Some(64),
+                health_base: Some(1.0),
                 ingress_ratio: Some(0.1),
                 k_neighbors: Some(4),
             },
@@ -65,6 +71,8 @@ impl Default for AnnpTomlConfig {
                 dataset_path: Some("synthetic".to_string()),
                 dataset_format: Some("synthetic".to_string()),
                 weight_decay: Some(1e-4),
+                chunk_size: Some(1048576),
+                seq_len: Some(1024),
             },
         }
     }
@@ -97,6 +105,9 @@ impl AnnpTomlConfig {
             weight_decay: self.train.weight_decay.unwrap_or(1e-4),
             ingress_ratio: self.model.ingress_ratio.unwrap_or(0.1),
             k_neighbors: self.model.k_neighbors.unwrap_or(4),
+            step_safety_margin: self.model.step_safety_margin.unwrap_or(20),
+            queue_backpressure: self.model.queue_backpressure.unwrap_or(64),
+            health_base: self.model.health_base.unwrap_or(1.0),
         }
     }
 }

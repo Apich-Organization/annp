@@ -20,6 +20,9 @@ fn main() -> candle_core::Result<()> {
         weight_decay: 1e-4,
         ingress_ratio: 0.1,
         k_neighbors: 4,
+        health_base: 1.0,
+        queue_backpressure: 64,
+        step_safety_margin: 20,
     };
 
     let device = Device::Cpu;

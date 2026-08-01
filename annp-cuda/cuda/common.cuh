@@ -128,6 +128,8 @@ inline bool copy_back_if_host(T* host_or_dev, const T* d_buf, size_t count, cuda
             cudaGetLastError(); // Clear sticky CUDA error status
         }
         cudaMemcpyAsync(host_or_dev, d_buf, count * sizeof(T), cudaMemcpyDeviceToHost, stream);
+        // Fix W-10: Synchronize stream when copying to non-pinned Host memory to prevent dirty reads in Rust
+        cudaStreamSynchronize(stream);
         return true;
     }
 }

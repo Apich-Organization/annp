@@ -26,6 +26,12 @@ pub struct MicroBlockConfig {
     pub ingress_ratio: f32,
     /// Number of neighbors for topology routing (default: 4)
     pub k_neighbors: usize,
+    /// Margin before max hop where safety checks begin (default: 20)
+    pub step_safety_margin: u16,
+    /// Threshold at which incoming queues apply backpressure (default: 64)
+    pub queue_backpressure: usize,
+    /// Threshold for node health calculation base (default: 1.0)
+    pub health_base: f32,
 }
 
 impl Default for MicroBlockConfig {
@@ -43,6 +49,9 @@ impl Default for MicroBlockConfig {
             weight_decay: 1e-4,
             ingress_ratio: 0.1,
             k_neighbors: 4,
+            step_safety_margin: 20,
+            queue_backpressure: 64,
+            health_base: 1.0,
         }
     }
 }

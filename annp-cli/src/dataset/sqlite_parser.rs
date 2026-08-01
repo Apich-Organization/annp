@@ -45,7 +45,10 @@ pub fn load_sqlite_dataset<P: AsRef<Path>>(
             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
 
         let mut current_seq = Vec::new();
-        let seq_len = 8;
+        let seq_len = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml")
+            .ok()
+            .and_then(|c| c.train.seq_len)
+            .unwrap_or(8);
 
         for row in rows.flatten() {
             let floats: Vec<f32> = row
@@ -70,7 +73,11 @@ pub fn load_sqlite_dataset<P: AsRef<Path>>(
     }
 
     if tensors.is_empty() {
-        tensors.push(Tensor::randn(0.0f32, 1.0f32, (8, d_model), device)?);
+        let seq_len = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml")
+            .ok()
+            .and_then(|c| c.train.seq_len)
+            .unwrap_or(8);
+        tensors.push(Tensor::randn(0.0f32, 1.0f32, (seq_len, d_model), device)?);
     }
 
     Ok(tensors)

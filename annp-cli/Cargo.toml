@@ -27,3 +27,4 @@ env_logger = "0.11"
 thiserror.workspace = true
 dtact.workspace = true
 tokenizers.workspace = true
+sentencepiece = "0.14.0"

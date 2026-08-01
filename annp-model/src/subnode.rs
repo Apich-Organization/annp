@@ -91,7 +91,11 @@ impl Subnode {
             .iter()
             .map(|&w| w + rng.random_range(-epsilon..epsilon))
             .collect();
-        let w_down = vec![0.0f32; parent.w_down.len()];
+        let w_down = parent
+            .w_down
+            .iter()
+            .map(|&w| w + rng.random_range(-1e-4..1e-4))
+            .collect();
 
         Self {
             subnode_id,
@@ -153,6 +157,13 @@ mod tests {
             "Child weights must be perturbed from parent"
         );
 
-        assert!(child.w_down.iter().all(|&w| w == 0.0));
+        let mut w_down_diff = 0.0;
+        for i in 0..w_len {
+            w_down_diff += (child.w_down[i] - parent.w_down[i]).abs();
+        }
+        assert!(
+            w_down_diff > 0.0,
+            "Child w_down must be perturbed from parent"
+        );
     }
 }

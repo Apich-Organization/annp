@@ -77,6 +77,13 @@ impl RoutingTable {
         let mut best = 0;
         let mut best_score = f32::NEG_INFINITY;
 
+        let valid_stats: Vec<_> = self.edge_credit.iter().filter(|s| s.count > 1.0).collect();
+        let prior_mean = if valid_stats.is_empty() {
+            0.0
+        } else {
+            valid_stats.iter().map(|s| s.mean).sum::<f32>() / (valid_stats.len() as f32)
+        };
+
         for k in 0..num_neighbors {
             let mut dot = 0.0f32;
             for d in 0..self.d_head {
@@ -85,16 +92,18 @@ impl RoutingTable {
 
             let score = if let Some(stats) = self.edge_credit.get(k) {
                 if stats.count <= 1.0 {
-                    f32::INFINITY
+                    dot + prior_mean
                 } else {
                     let mean = stats.mean;
                     let se = stats.standard_error();
                     let df = (stats.count - 1.0).max(1.0);
-                    let t_sample = annp_core::student_t_sample_approximation(df);
+                    let u1: f32 = rand::random::<f32>();
+                    let u2: f32 = rand::random::<f32>();
+                    let t_sample = annp_core::student_t_sample_approximation(df, u1, u2);
                     dot + mean + se * t_sample
                 }
             } else {
-                f32::INFINITY
+                dot + prior_mean
             };
 
             if score > best_score {
@@ -183,12 +192,24 @@ impl TopologyGrid {
             // Dynamic structured mesh generation without hardcoded offsets like '7'
             // Creates a hypercube-like local connection pattern based on prime increments
             let base_offset = (num_nodes as f32).sqrt().ceil() as usize;
-            for n in 1..=neighbors_per_node {
-                let step = base_offset.wrapping_mul(n).max(1);
+            let mut step_mult = 1;
+            while neighbors.len() < neighbors_per_node && step_mult < num_nodes {
+                let step = base_offset.wrapping_mul(step_mult).max(1);
                 let neighbor_id = (i + step) % num_nodes;
                 if neighbor_id != i && !neighbors.contains(&neighbor_id) {
                     neighbors.push(neighbor_id);
                 }
+                step_mult += 1;
+            }
+
+            // Fallback to sequential scanning if base_offset math caused cycles
+            let mut j = 1;
+            while neighbors.len() < neighbors_per_node && j < num_nodes {
+                let neighbor_id = (i + j) % num_nodes;
+                if neighbor_id != i && !neighbors.contains(&neighbor_id) {
+                    neighbors.push(neighbor_id);
+                }
+                j += 1;
             }
             routing_tables.push(RoutingTable::new(d_head, neighbors));
         }

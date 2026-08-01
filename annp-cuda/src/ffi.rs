@@ -96,16 +96,18 @@ impl CudaMicroBlockRunner {
         norm_strategy: usize,
         alpha: f32,
         sphere_radius: f32,
+        _stream: Option<&CudaStreamManager>,
         _d_weights: Option<&CudaDeviceWeights>,
     ) {
         #[cfg(any(feature = "cuda", cuda_available))]
         unsafe {
+            let stream_ptr = _stream.map_or(std::ptr::null_mut(), |s| s as *const _ as *mut c_void);
             launch_fused_micro_block(
                 p_in.as_ptr(),
                 fast_weight.as_ptr(),
-                w_gate.as_ptr(),
-                w_up.as_ptr(),
-                w_down.as_ptr(),
+                _d_weights.map_or(w_gate.as_ptr(), |d| d.gate_ptr as *const f32),
+                _d_weights.map_or(w_up.as_ptr(), |d| d.up_ptr as *const f32),
+                _d_weights.map_or(w_down.as_ptr(), |d| d.down_ptr as *const f32),
                 p_out.as_mut_ptr(),
                 batch_size as i32,
                 d_head as i32,
@@ -113,7 +115,7 @@ impl CudaMicroBlockRunner {
                 norm_strategy as i32,
                 alpha,
                 sphere_radius,
-                std::ptr::null_mut(),
+                stream_ptr,
             );
         }
 
@@ -272,6 +274,7 @@ impl CudaMicroBlockRunner {
             0,
             alpha,
             1.0,
+            _stream,
             _d_weights,
         );
     }

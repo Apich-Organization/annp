@@ -43,7 +43,10 @@ pub fn load_csv_dataset<P: AsRef<Path>>(
         }
     }
 
-    let chunk_size = 8;
+    let chunk_size = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml")
+        .ok()
+        .and_then(|c| c.train.seq_len)
+        .unwrap_or(8);
     for chunk in float_rows.chunks(chunk_size) {
         let seq_len = chunk.len();
         let mut flat = Vec::with_capacity(seq_len * d_model);
@@ -64,7 +67,11 @@ pub fn load_csv_dataset<P: AsRef<Path>>(
     }
 
     if tensors.is_empty() {
-        tensors.push(Tensor::randn(0.0f32, 1.0f32, (8, d_model), device)?);
+        let seq_len = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml")
+            .ok()
+            .and_then(|c| c.train.seq_len)
+            .unwrap_or(8);
+        tensors.push(Tensor::randn(0.0f32, 1.0f32, (seq_len, d_model), device)?);
     }
 
     Ok(tensors)

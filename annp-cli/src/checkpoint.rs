@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 8;
+const ANNPB_VERSION: u32 = 9;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
@@ -136,6 +136,7 @@ impl ModelCheckpoint {
                 file.write_all(&sub.credit_stats.count.to_le_bytes())?;
                 file.write_all(&sub.credit_stats.mean.to_le_bytes())?;
                 file.write_all(&sub.credit_stats.m2.to_le_bytes())?;
+                file.write_all(&sub.credit_stats.gamma.to_le_bytes())?;
                 file.write_all(&sub.health.to_le_bytes())?;
 
                 let gate_bytes = unsafe {
@@ -182,6 +183,7 @@ impl ModelCheckpoint {
                 file.write_all(&stats.count.to_le_bytes())?;
                 file.write_all(&stats.mean.to_le_bytes())?;
                 file.write_all(&stats.m2.to_le_bytes())?;
+                file.write_all(&stats.gamma.to_le_bytes())?;
             }
         }
 
@@ -301,6 +303,10 @@ impl ModelCheckpoint {
                         credit_stats.mean = f32::from_le_bytes(buf4);
                         file.read_exact(&mut buf4)?;
                         credit_stats.m2 = f32::from_le_bytes(buf4);
+                        if version >= 9 {
+                            file.read_exact(&mut buf4)?;
+                            credit_stats.gamma = f32::from_le_bytes(buf4);
+                        }
                     }
 
                     let mut health = 1.0f32;
@@ -472,11 +478,16 @@ impl ModelCheckpoint {
                     let mean = f32::from_le_bytes(buf4);
                     file.read_exact(&mut buf4)?;
                     let m2 = f32::from_le_bytes(buf4);
+                    let mut gamma = 0.99;
+                    if version >= 9 {
+                        file.read_exact(&mut buf4)?;
+                        gamma = f32::from_le_bytes(buf4);
+                    }
                     edge_credit.push(OnlineStats {
                         count: count_f32,
                         mean,
                         m2,
-                        gamma: 0.99,
+                        gamma,
                     });
                 }
             }

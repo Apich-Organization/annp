@@ -36,11 +36,11 @@ fn test_subnode_spawn_from_parent() {
 
     assert_eq!(child.subnode_id, 1);
 
-    // w_down should be fully zeroed on spawn to preserve identity transformation initially
+    // w_down should be slightly perturbed to prevent sudden drop in residual
     let all_zero = child.w_down.iter().all(|&w| w == 0.0);
     assert!(
-        all_zero,
-        "Spawned subnode must have zeroed w_down to maintain initial identity mapping"
+        !all_zero,
+        "Spawned subnode must have perturbed w_down to maintain smooth residual"
     );
 
     // w_gate and w_up should be perturbed slightly but not identical
@@ -56,7 +56,7 @@ fn test_subnode_spawn_from_parent() {
 fn test_micro_block_node_creation() {
     let config = MicroBlockConfig::default();
 
-    let max_kv_len = 128;
+    let _max_kv_len = 128;
 
     let node = MicroBlockNode::new(0, config, false);
 

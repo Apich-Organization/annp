@@ -39,15 +39,15 @@ impl OnlineStats {
     }
 
     pub fn variance(&self) -> f32 {
-        if self.count > 1.0 {
-            (self.m2 / (self.count - 1.0)).max(0.0)
+        if self.count > 0.0 {
+            (self.m2 / self.count).max(0.0)
         } else {
             0.0
         }
     }
 
     pub fn standard_error(&self) -> f32 {
-        if self.count > 1.0 {
+        if self.count > 0.0 {
             (self.variance() / self.count).sqrt()
         } else {
             f32::INFINITY
@@ -62,9 +62,8 @@ impl OnlineStats {
 
 /// Approximate sampling from a Student-t distribution with `df` degrees of freedom
 /// using 1st order Cornish-Fisher expansion.
-pub fn student_t_sample_approximation(df: f32) -> f32 {
-    let u1: f32 = rand::random::<f32>().max(f32::MIN_POSITIVE);
-    let u2: f32 = rand::random::<f32>();
+pub fn student_t_sample_approximation(df: f32, u1: f32, u2: f32) -> f32 {
+    let u1 = u1.max(f32::MIN_POSITIVE);
     let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
 
     if df < 1.0 {
@@ -96,11 +95,11 @@ pub fn compute_delta_p(p_in: &[f32], p_out: &[f32]) -> f32 {
 /// Compute Shannon Entropy H(probs) over attention probability distribution vector.
 /// H = - \sum_i p_i \log_2(p_i + \epsilon)
 pub fn compute_memory_density(probs: &[f32]) -> f32 {
-    let epsilon = 1e-12f32;
+    let epsilon = 1e-5f32;
     let mut entropy = 0.0f32;
     for &p in probs {
         if p > epsilon {
-            entropy -= p * (p + epsilon).log2();
+            entropy -= p * p.log2();
         }
     }
     entropy
@@ -109,7 +108,7 @@ pub fn compute_memory_density(probs: &[f32]) -> f32 {
 /// Sphere normalization helper: p_out = (p_in + sublayer_out) / (||...||_2 + eps) * S_base
 pub fn sphere_normalize(vec: &mut [f32], radius: f32) {
     let norm_sq: f32 = vec.iter().map(|&x| x * x).sum();
-    let norm = (norm_sq + 1e-8).sqrt();
+    let norm = (norm_sq + 1e-5).sqrt();
     let scale = radius / norm;
     for x in vec.iter_mut() {
         *x *= scale;
@@ -120,6 +119,6 @@ pub fn sphere_normalize(vec: &mut [f32], radius: f32) {
 pub fn rms_normalize(sublayer: &[f32]) -> Vec<f32> {
     let n = sublayer.len() as f32;
     let mean_sq: f32 = sublayer.iter().map(|&x| x * x).sum::<f32>() / n;
-    let rms = (mean_sq + 1e-8).sqrt();
+    let rms = (mean_sq + 1e-5).sqrt();
     sublayer.iter().map(|&x| x / rms).collect()
 }

@@ -104,8 +104,15 @@ impl DatasetStream {
         device: &Device,
     ) -> Result<(Self, usize)> {
         let p = path.as_ref();
+        let chunk_size = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml")
+            .ok()
+            .and_then(|c| c.train.chunk_size)
+            .unwrap_or(8192);
+
         if matches!(format, DatasetFormat::Json | DatasetFormat::Jsonl) && p.exists() {
-            if let Ok((chunk_paths, _total_count)) = json_parser::split_and_cache_dataset(p, 8192) {
+            if let Ok((chunk_paths, _total_count)) =
+                json_parser::split_and_cache_dataset(p, chunk_size)
+            {
                 let mut stream = Self::ChunkedJson {
                     chunk_paths,
                     current_chunk_idx: 0,
@@ -118,7 +125,9 @@ impl DatasetStream {
                 return Ok((stream, _total_count));
             }
         } else if matches!(format, DatasetFormat::Csv) && p.exists() {
-            if let Ok((chunk_paths, _total_count)) = csv_parser::split_and_cache_dataset(p, 8192) {
+            if let Ok((chunk_paths, _total_count)) =
+                csv_parser::split_and_cache_dataset(p, chunk_size)
+            {
                 let mut stream = Self::ChunkedCsv {
                     chunk_paths,
                     current_chunk_idx: 0,
@@ -132,7 +141,8 @@ impl DatasetStream {
             }
         } else if matches!(format, DatasetFormat::Sqlite)
             && p.exists()
-            && let Ok((chunk_paths, _total_count)) = sqlite_parser::split_and_cache_dataset(p, 8192)
+            && let Ok((chunk_paths, _total_count)) =
+                sqlite_parser::split_and_cache_dataset(p, chunk_size)
         {
             let mut stream = Self::ChunkedSqlite {
                 chunk_paths,
