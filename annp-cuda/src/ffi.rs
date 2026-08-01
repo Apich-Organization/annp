@@ -134,18 +134,18 @@ impl CudaMicroBlockRunner {
 
                     // 1. Fast Weight Matrix Multiply
                     let mut attn_out = vec![0.0f32; d_head];
-                    
+
                     let mut sq_sum_in = 0.0f32;
                     for &val in curr_p.iter() {
                         sq_sum_in += val * val;
                     }
                     let inv_rms_in = 1.0 / (sq_sum_in / (d_head as f32) + 1e-8).sqrt();
-                    
+
                     let mut p_in_normed = vec![0.0f32; d_head];
                     for d in 0..d_head {
                         p_in_normed[d] = curr_p[d] * inv_rms_in;
                     }
-                    
+
                     for r in 0..d_head {
                         let mut sum = 0.0f32;
                         for c in 0..d_head {
