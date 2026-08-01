@@ -179,7 +179,7 @@ pub fn execute_train(
             epoch_metrics_acc.avg_signal_energy += batch_metrics.avg_signal_energy;
             epoch_metrics_acc.avg_subnodes += batch_metrics.avg_subnodes;
             epoch_metrics_acc.utilization_gini += batch_metrics.utilization_gini;
-            epoch_metrics_acc.avg_attention_entropy += batch_metrics.avg_attention_entropy;
+            epoch_metrics_acc.avg_memory_density += batch_metrics.avg_memory_density;
             epoch_metrics_acc.avg_credit_volatility += batch_metrics.avg_credit_volatility;
             epoch_metrics_acc.avg_temporal_affinity += batch_metrics.avg_temporal_affinity;
 
@@ -210,7 +210,7 @@ pub fn execute_train(
         epoch_metrics_acc.avg_signal_energy /= sc;
         epoch_metrics_acc.avg_subnodes /= sc;
         epoch_metrics_acc.utilization_gini /= sc;
-        epoch_metrics_acc.avg_attention_entropy /= sc;
+        epoch_metrics_acc.avg_memory_density /= sc;
         epoch_metrics_acc.avg_credit_volatility /= sc;
         epoch_metrics_acc.avg_temporal_affinity /= sc;
 

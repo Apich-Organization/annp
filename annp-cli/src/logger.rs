@@ -60,7 +60,7 @@ impl AnnpLogger {
             {
                 let _ = writeln!(
                     csv,
-                    "timestamp,epoch,batch,step_loss,ema_loss,early_halting_rate,gini,avg_hops,avg_energy,attention_entropy,active_subnodes,credit_volatility,temporal_affinity"
+                    "timestamp,epoch,batch,step_loss,ema_loss,early_halting_rate,gini,avg_hops,avg_energy,memory_density,active_subnodes,credit_volatility,temporal_affinity"
                 );
             }
         }
@@ -137,7 +137,7 @@ impl AnnpLogger {
                 metrics.utilization_gini,
                 metrics.avg_hop_count,
                 metrics.avg_signal_energy,
-                metrics.avg_attention_entropy,
+                metrics.avg_memory_density,
                 metrics.avg_subnodes,
                 metrics.avg_credit_volatility,
                 metrics.avg_temporal_affinity
@@ -161,7 +161,7 @@ impl AnnpLogger {
             metrics.early_halting_rate * 100.0,
             metrics.avg_signal_energy,
             metrics.utilization_gini,
-            metrics.avg_attention_entropy,
+            metrics.avg_memory_density,
             metrics.avg_subnodes,
             metrics.avg_credit_volatility,
             metrics.avg_temporal_affinity

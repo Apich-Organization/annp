@@ -325,7 +325,7 @@ impl ANNPModel {
             total_halted += nm.halted_particles_count;
             total_energy += nm.sum_squared_energy;
             total_particles += nm.total_particles_processed;
-            total_entropy += nm.sum_attention_entropy;
+            total_entropy += nm.sum_memory_density;
             total_attn_ops += nm.attention_ops_count;
             total_volatility += nm.sum_credit_volatility;
             total_affinity += nm.sum_temporal_affinity;
@@ -357,7 +357,7 @@ impl ANNPModel {
             avg_signal_energy: total_energy / pt,
             avg_subnodes: total_subnodes as f32 / self.num_nodes.max(1) as f32,
             utilization_gini: gini,
-            avg_attention_entropy: if total_attn_ops > 0 {
+            avg_memory_density: if total_attn_ops > 0 {
                 total_entropy / total_attn_ops as f32
             } else {
                 0.0
@@ -375,7 +375,7 @@ pub struct BatchMetrics {
     pub avg_signal_energy: f32,
     pub avg_subnodes: f32,
     pub utilization_gini: f32,
-    pub avg_attention_entropy: f32,
+    pub avg_memory_density: f32,
     pub avg_credit_volatility: f32,
     pub avg_temporal_affinity: f32,
 }

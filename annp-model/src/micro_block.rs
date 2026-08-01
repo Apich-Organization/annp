@@ -36,7 +36,7 @@ pub struct MicroBlockNode {
     pub halted_particles_count: u64,
     pub sum_squared_energy: f32,
     pub total_particles_processed: u64,
-    pub sum_attention_entropy: f32,
+    pub sum_memory_density: f32,
     pub attention_ops_count: u64,
     pub sum_credit_volatility: f32,
     pub sum_temporal_affinity: f32,
@@ -87,7 +87,7 @@ impl MicroBlockNode {
             halted_particles_count: 0,
             sum_squared_energy: 0.0,
             total_particles_processed: 0,
-            sum_attention_entropy: 0.0,
+            sum_memory_density: 0.0,
             attention_ops_count: 0,
             sum_credit_volatility: 0.0,
             sum_temporal_affinity: 0.0,
@@ -586,7 +586,7 @@ impl MicroBlockNode {
             fw_sq_sum += w * w;
         }
         let fw_density = (fw_sq_sum / (d_head * d_head) as f32).sqrt();
-        self.sum_attention_entropy += fw_density * batch_size as f32;
+        self.sum_memory_density += fw_density * batch_size as f32;
         self.attention_ops_count += batch_size as u64;
 
         self.try_subnode_neurogenesis();
@@ -599,7 +599,7 @@ impl MicroBlockNode {
             halted_particles_count: self.halted_particles_count,
             sum_squared_energy: self.sum_squared_energy,
             total_particles_processed: self.total_particles_processed,
-            sum_attention_entropy: self.sum_attention_entropy,
+            sum_memory_density: self.sum_memory_density,
             attention_ops_count: self.attention_ops_count,
             sum_credit_volatility: self.sum_credit_volatility,
             sum_temporal_affinity: self.sum_temporal_affinity,
@@ -610,7 +610,7 @@ impl MicroBlockNode {
         self.halted_particles_count = 0;
         self.sum_squared_energy = 0.0;
         self.total_particles_processed = 0;
-        self.sum_attention_entropy = 0.0;
+        self.sum_memory_density = 0.0;
         self.attention_ops_count = 0;
         self.sum_credit_volatility = 0.0;
         self.sum_temporal_affinity = 0.0;
@@ -624,7 +624,7 @@ pub struct NodeMetrics {
     pub halted_particles_count: u64,
     pub sum_squared_energy: f32,
     pub total_particles_processed: u64,
-    pub sum_attention_entropy: f32,
+    pub sum_memory_density: f32,
     pub attention_ops_count: u64,
     pub sum_credit_volatility: f32,
     pub sum_temporal_affinity: f32,

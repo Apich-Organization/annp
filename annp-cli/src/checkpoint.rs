@@ -243,7 +243,7 @@ impl ModelCheckpoint {
                 let mut last_token_id = None;
 
                 if version >= 5 {
-                    let mut read_f32_vec =
+                    let read_f32_vec =
                         |file: &mut File,
                          buf4: &mut [u8; 4]|
                          -> Result<Vec<f32>, Box<dyn std::error::Error>> {
@@ -453,7 +453,7 @@ impl ModelCheckpoint {
                 file.read_exact(&mut buf4)?;
                 let ec_len = u32::from_le_bytes(buf4) as usize;
                 for _ in 0..ec_len {
-                    let mut count_f32 = 0.0;
+                    let count_f32: f32;
                     if version >= 7 {
                         file.read_exact(&mut buf4)?;
                         count_f32 = f32::from_le_bytes(buf4);

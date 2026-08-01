@@ -95,7 +95,7 @@ pub fn compute_delta_p(p_in: &[f32], p_out: &[f32]) -> f32 {
 
 /// Compute Shannon Entropy H(probs) over attention probability distribution vector.
 /// H = - \sum_i p_i \log_2(p_i + \epsilon)
-pub fn compute_attention_entropy(probs: &[f32]) -> f32 {
+pub fn compute_memory_density(probs: &[f32]) -> f32 {
     let epsilon = 1e-12f32;
     let mut entropy = 0.0f32;
     for &p in probs {
