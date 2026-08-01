@@ -91,10 +91,12 @@ impl Subnode {
             .iter()
             .map(|&w| w + rng.random_range(-epsilon..epsilon))
             .collect();
+        // w_down uses the same data-driven epsilon as w_gate/w_up.
+        // Previously used hardcoded 1e-4 which is ~50x smaller than epsilon for d_head=64,ffn_dim=512.
         let w_down = parent
             .w_down
             .iter()
-            .map(|&w| w + rng.random_range(-1e-4..1e-4))
+            .map(|&w| w + rng.random_range(-epsilon..epsilon))
             .collect();
 
         Self {

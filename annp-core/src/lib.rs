@@ -6,7 +6,7 @@ pub mod particle;
 
 pub use config::MicroBlockConfig;
 pub use metrics::{
-    OnlineStats, compute_delta_p, compute_memory_density, rms_normalize, sphere_normalize,
-    student_t_sample_approximation,
+    OnlineStats, RMS_EPSILON, compute_delta_p, compute_memory_density, rms_normalize,
+    sphere_normalize, student_t_sample_approximation,
 };
 pub use particle::{Particle, ParticleHeader};

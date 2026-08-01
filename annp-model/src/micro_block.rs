@@ -1,5 +1,5 @@
 use crate::subnode::Subnode;
-use annp_core::{MicroBlockConfig, Particle};
+use annp_core::{MicroBlockConfig, Particle, RMS_EPSILON};
 use annp_cuda;
 
 #[repr(align(128))]
@@ -11,6 +11,10 @@ pub struct MicroBlockNode {
 
     // Local Implicit Memory (Fast Weights)
     pub fast_weight: Vec<f32>, // Flat [d_head * d_head]
+    /// Cumulative sum of all input energies seen. Used to derive the fast_weight
+    /// decay rate lambda = 1 - 1/sqrt(cumulative_energy). As more data is seen,
+    /// lambda → 1, meaning the fast_weight increasingly retains past associations.
+    /// This is the intended design: fast_weight acts as a long-term local memory.
     pub cumulative_energy: f32,
 
     // Last activation cache for exact chain-rule backpropagation
@@ -123,17 +127,31 @@ impl MicroBlockNode {
         let active_idx = self.active_subnode;
         let active = &self.subnodes[active_idx];
 
-        let loss_avg = if self.local_loss_count > 0 {
-            self.local_loss_accumulator / self.local_loss_count as f32
-        } else {
-            f32::INFINITY
-        };
-
-        let health_threshold = self.config.health_base + self.subnodes.len() as f32;
+        // Neurogenesis conditions (all must hold):
+        //
+        // 1. Not at max subnode capacity.
+        //
+        // 2. The node has seen enough data to form a reliable estimate.
+        //    cumulative_energy > d_head² is a natural proxy: with batch_energy ≈ d_head
+        //    per particle, this requires processing at least d_head full batches.
+        //    This ensures the credit stats have passed the high-alpha transient phase.
+        //
+        // 3. The active subnode has enough credit observations.
+        //    With the Welford+EWM count converging to ~100, count > 10 means the
+        //    estimate has stabilised past the first few high-variance observations.
+        //
+        // 4. The active subnode's mean credit is negative: its local transformation
+        //    is consistently reducing Hopfield self-agreement. Splitting may allow
+        //    a child to find a better attractor for this node's traffic pattern.
+        let d_head = self.config.d_head;
+        let has_enough_data = self.cumulative_energy > (d_head * d_head) as f32;
+        let has_enough_obs = active.credit_stats.count > 10.0;
+        let performing_badly = active.credit_stats.mean < 0.0;
 
         if self.subnodes.len() < self.config.subnode_max
-            && active.health > health_threshold
-            && active.credit_stats.variance() > loss_avg
+            && has_enough_data
+            && has_enough_obs
+            && performing_badly
         {
             let parent_subnode = active.clone();
             let new_subnode_id = self.subnodes.len();
@@ -188,7 +206,7 @@ impl MicroBlockNode {
                 .map(|(i, _)| i)
                 .unwrap_or(0);
             self.subnodes[best_idx].health = 0.5;
-            let keep = vec![best_idx];
+            let keep = [best_idx];
 
             let old_len = self.subnodes.len();
             let active_old = self.active_subnode;
@@ -240,6 +258,11 @@ impl MicroBlockNode {
             self.process_sub_batch(&mut particles[start..end], learning_rate);
             start = end;
         }
+
+        // Neurogenesis and pruning happen ONCE per full batch (not per sub-batch).
+        // This ensures enough credit signal has accumulated before making structural decisions.
+        self.try_subnode_neurogenesis();
+        self.prune_dominated_subnodes();
     }
 
     fn process_sub_batch(&mut self, particles: &mut [Particle], learning_rate: Option<f32>) {
@@ -271,7 +294,10 @@ impl MicroBlockNode {
         let mut best_score = f32::NEG_INFINITY;
         let mut active_idx = 0;
 
-        let decay = 1.0 / (d_head as f32 * self.subnodes.len().max(1) as f32);
+        // Fixed per-node health decay rate: 1/d_head regardless of how many subnodes exist.
+        // This prevents a positive-feedback loop where more subnodes → lower decay → they
+        // survive longer → even more subnodes. Each node earns its place independently.
+        let decay = 1.0 / (d_head as f32);
         for (i, subnode) in self.subnodes.iter_mut().enumerate() {
             subnode.health -= decay;
 
@@ -299,163 +325,178 @@ impl MicroBlockNode {
 
         let token_id = particles[0].header.origin_token_id;
 
-        if let Some(last_id) = self.last_token_id {
-            if token_id == last_id + 1 {
-                let mut local_err = vec![0.0f32; d_head];
-                for (err, (pred, p_in)) in local_err
-                    .iter_mut()
-                    .zip(self.last_prediction.iter().zip(self.p_in_buf.iter()))
-                {
-                    *err = pred - p_in;
+        if let Some(last_id) = self.last_token_id
+            && token_id == last_id + 1
+        {
+            let mut local_err = vec![0.0f32; d_head];
+            for (err, (pred, p_in)) in local_err
+                .iter_mut()
+                .zip(self.last_prediction.iter().zip(self.p_in_buf.iter()))
+            {
+                *err = pred - p_in;
+            }
+
+            let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
+            let mse = sq_err / d_head as f32;
+            self.local_loss_accumulator += mse;
+            self.local_loss_count += 1;
+
+            if let Some(lr) = learning_rate {
+                let weight_decay = self.config.weight_decay;
+                let wd_factor = 1.0 - lr * weight_decay;
+
+                let mut p_in_normed = vec![0.0f32; d_head];
+                let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
+                let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + RMS_EPSILON).sqrt();
+                for (normed, &in_val) in p_in_normed.iter_mut().zip(self.last_p_in.iter()) {
+                    *normed = in_val * inv_rms_attn;
                 }
 
-                let sq_err: f32 = local_err.iter().map(|&x| x * x).sum();
-                let mse = sq_err / d_head as f32;
-                self.local_loss_accumulator += mse;
-                self.local_loss_count += 1;
-
-                if let Some(lr) = learning_rate {
-                    let weight_decay = self.config.weight_decay;
-                    let wd_factor = 1.0 - lr * weight_decay;
-
-                    let mut p_in_normed = vec![0.0f32; d_head];
-                    let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
-                    let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + 1e-8).sqrt();
-                    for (normed, &in_val) in p_in_normed.iter_mut().zip(self.last_p_in.iter()) {
-                        *normed = in_val * inv_rms_attn;
+                // Forward for fast_weight
+                let mut attn_out = vec![0.0f32; d_head];
+                for r in 0..d_head {
+                    let mut sum = 0.0;
+                    for c in 0..d_head {
+                        sum += self.fast_weight[r * d_head + c] * p_in_normed[c];
                     }
+                    attn_out[r] = sum;
+                }
 
-                    // Forward for fast_weight
-                    let mut attn_out = vec![0.0f32; d_head];
-                    for r in 0..d_head {
-                        let mut sum = 0.0;
-                        for c in 0..d_head {
-                            sum += self.fast_weight[r * d_head + c] * p_in_normed[c];
-                        }
-                        attn_out[r] = sum;
-                    }
+                let subnode = &mut self.subnodes[active];
+                let alpha = subnode.alpha;
 
-                    let subnode = &mut self.subnodes[active];
-                    let alpha = subnode.alpha;
+                let mut s_mid = vec![0.0f32; d_head];
+                for (s, (&in_val, &attn_val)) in s_mid
+                    .iter_mut()
+                    .zip(self.last_p_in.iter().zip(attn_out.iter()))
+                {
+                    *s = in_val + alpha * attn_val;
+                }
 
-                    let mut s_mid = vec![0.0f32; d_head];
-                    for (s, (&in_val, &attn_val)) in s_mid
-                        .iter_mut()
-                        .zip(self.last_p_in.iter().zip(attn_out.iter()))
-                    {
-                        *s = in_val + alpha * attn_val;
-                    }
+                let mut s_mid_normed = vec![0.0f32; d_head];
+                let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
+                let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + RMS_EPSILON).sqrt();
+                for (normed, &s_val) in s_mid_normed.iter_mut().zip(s_mid.iter()) {
+                    *normed = s_val * inv_rms_ffn;
+                }
 
-                    let mut s_mid_normed = vec![0.0f32; d_head];
-                    let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
-                    let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
-                    for (normed, &s_val) in s_mid_normed.iter_mut().zip(s_mid.iter()) {
-                        *normed = s_val * inv_rms_ffn;
-                    }
+                let mut ffn_inter = vec![0.0f32; ffn_dim];
+                let mut gate_arr = vec![0.0f32; ffn_dim];
+                let mut up_arr = vec![0.0f32; ffn_dim];
+                let mut swish_arr = vec![0.0f32; ffn_dim];
 
-                    let mut ffn_inter = vec![0.0f32; ffn_dim];
-                    let mut gate_arr = vec![0.0f32; ffn_dim];
-                    let mut up_arr = vec![0.0f32; ffn_dim];
-                    let mut swish_arr = vec![0.0f32; ffn_dim];
-
-                    for f in 0..ffn_dim {
-                        let mut gate = 0.0f32;
-                        let mut up = 0.0f32;
-                        for (d, &m_val) in s_mid_normed.iter().enumerate() {
-                            gate += m_val * subnode.w_gate[d * ffn_dim + f];
-                            up += m_val * subnode.w_up[d * ffn_dim + f];
-                        }
-
-                        let sig = 1.0 / (1.0 + (-gate).exp());
-                        let swish = gate * sig;
-
-                        gate_arr[f] = gate;
-                        up_arr[f] = up;
-                        swish_arr[f] = swish;
-                        ffn_inter[f] = swish * up;
-                    }
-
-                    let mut d_inter = vec![0.0f32; ffn_dim];
-                    for (f, inter_val) in d_inter.iter_mut().enumerate() {
-                        let mut sum = 0.0f32;
-                        for (d, &err) in local_err.iter().enumerate() {
-                            sum += err * subnode.w_down[f * d_head + d];
-                        }
-                        *inter_val = sum;
-                    }
-
-                    let mut d_gate_arr = vec![0.0f32; ffn_dim];
-                    let mut d_up_arr = vec![0.0f32; ffn_dim];
-                    for f in 0..ffn_dim {
-                        let d_int = d_inter[f];
-                        let d_swish = d_int * up_arr[f];
-                        let d_up = d_int * swish_arr[f];
-
-                        let gate = gate_arr[f];
-                        let sig = 1.0 / (1.0 + (-gate).exp());
-                        let d_sig_d_gate = sig * (1.0 - sig);
-                        let d_swish_d_gate = sig + gate * d_sig_d_gate;
-
-                        let d_gate = d_swish * d_swish_d_gate;
-                        d_gate_arr[f] = d_gate;
-                        d_up_arr[f] = d_up;
-                    }
-
-                    // Precise RMSNorm chain rule back to s_mid
-                    let mut d_s_mid_normed = vec![0.0f32; d_head];
-                    for f in 0..ffn_dim {
-                        let dg = d_gate_arr[f] * alpha;
-                        let du = d_up_arr[f] * alpha;
-                        for d in 0..d_head {
-                            d_s_mid_normed[d] += dg * subnode.w_gate[d * ffn_dim + f]
-                                + du * subnode.w_up[d * ffn_dim + f];
-                        }
-                    }
-
-                    let dot_product: f32 = d_s_mid_normed
-                        .iter()
-                        .zip(s_mid_normed.iter())
-                        .map(|(&dy, &y)| dy * y)
-                        .sum();
-                    let mut d_s_mid_total = vec![0.0f32; d_head];
-                    for d in 0..d_head {
-                        let d_s_mid_ffn = inv_rms_ffn
-                            * (d_s_mid_normed[d] - s_mid_normed[d] * dot_product / (d_head as f32));
-                        d_s_mid_total[d] = local_err[d] + d_s_mid_ffn;
-                    }
-
-                    let max_grad = 1.0 / (d_head as f32).sqrt();
-
-                    // Update fast_weight using exact chain rule gradient
-                    let lambda = 1.0 - 1.0 / self.cumulative_energy.max(1.0).sqrt();
-                    for r in 0..d_head {
-                        let d_attn_out = d_s_mid_total[r] * alpha;
-                        for c in 0..d_head {
-                            let idx = r * d_head + c;
-                            let grad = (d_attn_out * p_in_normed[c]).clamp(-max_grad, max_grad);
-                            self.fast_weight[idx] = self.fast_weight[idx] * lambda - lr * grad;
-                        }
-                    }
-
-                    for (f, &inter_val) in ffn_inter.iter().enumerate() {
-                        let w_down_slice = &mut subnode.w_down[f * d_head..(f + 1) * d_head];
-                        for (d, &err_val) in local_err.iter().enumerate() {
-                            let grad = (err_val * inter_val * alpha).clamp(-max_grad, max_grad);
-                            w_down_slice[d] = w_down_slice[d] * wd_factor - lr * grad;
-                        }
-                    }
-
+                for f in 0..ffn_dim {
+                    let mut gate = 0.0f32;
+                    let mut up = 0.0f32;
                     for (d, &m_val) in s_mid_normed.iter().enumerate() {
-                        let w_gate_slice = &mut subnode.w_gate[d * ffn_dim..(d + 1) * ffn_dim];
-                        let w_up_slice = &mut subnode.w_up[d * ffn_dim..(d + 1) * ffn_dim];
-                        for f in 0..ffn_dim {
-                            let grad_gate =
-                                (d_gate_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
-                            let grad_up = (d_up_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+                        gate += m_val * subnode.w_gate[d * ffn_dim + f];
+                        up += m_val * subnode.w_up[d * ffn_dim + f];
+                    }
 
-                            w_gate_slice[f] = w_gate_slice[f] * wd_factor - lr * grad_gate;
-                            w_up_slice[f] = w_up_slice[f] * wd_factor - lr * grad_up;
-                        }
+                    let sig = 1.0 / (1.0 + (-gate).exp());
+                    let swish = gate * sig;
+
+                    gate_arr[f] = gate;
+                    up_arr[f] = up;
+                    swish_arr[f] = swish;
+                    ffn_inter[f] = swish * up;
+                }
+
+                let mut d_inter = vec![0.0f32; ffn_dim];
+                for (f, inter_val) in d_inter.iter_mut().enumerate() {
+                    let mut sum = 0.0f32;
+                    for (d, &err) in local_err.iter().enumerate() {
+                        sum += err * subnode.w_down[f * d_head + d];
+                    }
+                    *inter_val = sum;
+                }
+
+                let mut d_gate_arr = vec![0.0f32; ffn_dim];
+                let mut d_up_arr = vec![0.0f32; ffn_dim];
+                for f in 0..ffn_dim {
+                    let d_int = d_inter[f];
+                    let d_swish = d_int * up_arr[f];
+                    let d_up = d_int * swish_arr[f];
+
+                    let gate = gate_arr[f];
+                    let sig = 1.0 / (1.0 + (-gate).exp());
+                    let d_sig_d_gate = sig * (1.0 - sig);
+                    let d_swish_d_gate = sig + gate * d_sig_d_gate;
+
+                    let d_gate = d_swish * d_swish_d_gate;
+                    d_gate_arr[f] = d_gate;
+                    d_up_arr[f] = d_up;
+                }
+
+                // Precise RMSNorm chain rule back to s_mid
+                let mut d_s_mid_normed = vec![0.0f32; d_head];
+                for f in 0..ffn_dim {
+                    let dg = d_gate_arr[f] * alpha;
+                    let du = d_up_arr[f] * alpha;
+                    for d in 0..d_head {
+                        d_s_mid_normed[d] += dg * subnode.w_gate[d * ffn_dim + f]
+                            + du * subnode.w_up[d * ffn_dim + f];
+                    }
+                }
+
+                let dot_product: f32 = d_s_mid_normed
+                    .iter()
+                    .zip(s_mid_normed.iter())
+                    .map(|(&dy, &y)| dy * y)
+                    .sum();
+                let mut d_s_mid_total = vec![0.0f32; d_head];
+                for d in 0..d_head {
+                    // Correct RMSNorm chain rule for d_s_mid:
+                    //   p_out = s_mid + alpha * FFN(RMSNorm(s_mid))
+                    //   ∂p_out/∂s_mid = I + alpha * (∂FFN/∂s_mid_normed) * (∂RMSNorm/∂s_mid)
+                    // The alpha factor on the FFN path propagates back through the norm.
+                    // d_s_mid_normed already contains the alpha (from d_gate *= alpha above),
+                    // so the RMSNorm Jacobian term is:
+                    //   inv_rms_ffn * (d_s_mid_normed[d] - s_mid_normed[d] * dot/d_head)
+                    // The residual branch contributes local_err[d] directly (∂p_out/∂s_mid = I).
+                    let d_s_mid_ffn = inv_rms_ffn
+                        * (d_s_mid_normed[d] - s_mid_normed[d] * dot_product / (d_head as f32));
+                    d_s_mid_total[d] = local_err[d] + d_s_mid_ffn;
+                }
+
+                let max_grad = 1.0 / (d_head as f32).sqrt();
+
+                // Update fast_weight with associative Hebbian-style update.
+                // lambda = 1 - 1/sqrt(cumulative_energy) derives naturally from the
+                // cumulative input energy: as the node sees more data, lambda → 1,
+                // meaning the fast_weight retains associations longer (intended behavior).
+                // Initially cumulative_energy is small → lambda is small → aggressive
+                // decay when the node hasn't learned stable patterns yet.
+                // cumulative_energy is updated on EVERY sub-batch (line 280), so by the
+                // time the first learning step fires, it's already ≈ batch_energy ≈ 64,
+                // giving lambda ≈ 0.875 from the very first update.
+                let lambda = 1.0 - 1.0 / self.cumulative_energy.max(1.0).sqrt();
+                for r in 0..d_head {
+                    let d_attn_out = d_s_mid_total[r] * alpha;
+                    for c in 0..d_head {
+                        let idx = r * d_head + c;
+                        let grad = (d_attn_out * p_in_normed[c]).clamp(-max_grad, max_grad);
+                        self.fast_weight[idx] = self.fast_weight[idx] * lambda - lr * grad;
+                    }
+                }
+
+                for (f, &inter_val) in ffn_inter.iter().enumerate() {
+                    let w_down_slice = &mut subnode.w_down[f * d_head..(f + 1) * d_head];
+                    for (d, &err_val) in local_err.iter().enumerate() {
+                        let grad = (err_val * inter_val * alpha).clamp(-max_grad, max_grad);
+                        w_down_slice[d] = w_down_slice[d] * wd_factor - lr * grad;
+                    }
+                }
+
+                for (d, &m_val) in s_mid_normed.iter().enumerate() {
+                    let w_gate_slice = &mut subnode.w_gate[d * ffn_dim..(d + 1) * ffn_dim];
+                    let w_up_slice = &mut subnode.w_up[d * ffn_dim..(d + 1) * ffn_dim];
+                    for f in 0..ffn_dim {
+                        let grad_gate = (d_gate_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+                        let grad_up = (d_up_arr[f] * m_val * alpha).clamp(-max_grad, max_grad);
+
+                        w_gate_slice[f] = w_gate_slice[f] * wd_factor - lr * grad_gate;
+                        w_up_slice[f] = w_up_slice[f] * wd_factor - lr * grad_up;
                     }
                 }
             }
@@ -484,7 +525,7 @@ impl MicroBlockNode {
 
         let mut p_in_normed = vec![0.0f32; d_head];
         let sq_sum_in: f32 = self.p_in_buf.iter().map(|&x| x * x).sum();
-        let inv_rms_in = 1.0 / (sq_sum_in / (d_head as f32) + 1e-8).sqrt();
+        let inv_rms_in = 1.0 / (sq_sum_in / (d_head as f32) + RMS_EPSILON).sqrt();
         for (normed, &in_val) in p_in_normed.iter_mut().zip(self.p_in_buf.iter()) {
             *normed = in_val * inv_rms_in;
         }
@@ -513,7 +554,7 @@ impl MicroBlockNode {
 
             let mut s_mid_normed = vec![0.0f32; d_head];
             let sq_sum_ffn: f32 = s_mid.iter().map(|&x| x * x).sum();
-            let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + 1e-8).sqrt();
+            let inv_rms_ffn = 1.0 / (sq_sum_ffn / (d_head as f32) + RMS_EPSILON).sqrt();
             for (normed, &s_val) in s_mid_normed.iter_mut().zip(s_mid.iter()) {
                 *normed = s_val * inv_rms_ffn;
             }
@@ -626,9 +667,12 @@ impl MicroBlockNode {
             let mean_credit = total_batch_credit / valid_credit_count;
             self.subnodes[active].credit_stats.observe(mean_credit);
             if mean_credit > 0.0 {
+                // Positive credit: full reward
                 self.subnodes[active].health += mean_credit;
             } else {
-                self.subnodes[active].health += mean_credit * 0.5; // lose health faster
+                // Negative credit: gentler penalty to avoid premature death from noise.
+                // A subnode needs sustained poor performance (not one bad batch) to be replaced.
+                self.subnodes[active].health += mean_credit * 0.5;
             }
         }
 
@@ -644,9 +688,8 @@ impl MicroBlockNode {
         let fw_density = (fw_sq_sum / (d_head * d_head) as f32).sqrt();
         self.sum_memory_density += fw_density * batch_size as f32;
         self.attention_ops_count += batch_size as u64;
-
-        self.try_subnode_neurogenesis();
-        self.prune_dominated_subnodes();
+        // NOTE: neurogenesis and pruning are called at process_batch level, not here,
+        // to ensure sufficient credit signal has accumulated across all sub-batches.
     }
 
     pub fn extract_and_reset_metrics(&mut self) -> NodeMetrics {

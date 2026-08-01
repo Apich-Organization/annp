@@ -12,8 +12,14 @@ pub struct TokenScattering {
 
 impl TokenScattering {
     pub fn new(num_shards: usize, d_head: usize, ingress_ratio: f32) -> Self {
-        let num_ingress = ((num_shards as f32 * ingress_ratio).ceil() as usize).max(1);
-        let ingress_node_indices: Vec<usize> = (0..num_ingress).collect();
+        let num_nodes = num_shards; // num_nodes == num_shards in the current architecture
+        let num_ingress = ((num_nodes as f32 * ingress_ratio).ceil() as usize).max(1);
+        // Uniformly distribute ingress nodes across the full mesh by stepping with stride.
+        // Previously took [0..num_ingress] which clusters all ingress in one topological region.
+        let step = (num_nodes / num_ingress).max(1);
+        let ingress_node_indices: Vec<usize> = (0..num_ingress)
+            .map(|i| (i * step).min(num_nodes - 1))
+            .collect();
 
         Self {
             num_shards,

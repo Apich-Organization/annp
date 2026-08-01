@@ -2,7 +2,7 @@ use annp_model::ANNPModel;
 use candle_core::{Result, Tensor};
 
 /// Unified Stage: Global Wave Pre-training & Plasticity Hardening.
-/// Shard-specific exact residual backpropagation with learning rate decay.
+/// Shard-specific exact residual backpropagation.
 pub struct Trainer {
     pub base_lr: f32,
 }
@@ -27,12 +27,13 @@ impl Trainer {
         // Reset node KV Caches before each sequence to prevent cross-sequence pollution
         model.reset_state();
 
+        let lr = self.base_lr;
         let mut final_seq_loss = 0.0;
 
         // Feed tokens sequentially to allow temporal difference learning to emerge from the particle flow
         for i in 0..full_seq_len {
             let single_token = input_embeddings.narrow(0, i, 1)?;
-            let (_, step_loss) = model.forward(&single_token, i, Some(self.base_lr))?;
+            let (_, step_loss) = model.forward(&single_token, i, Some(lr))?;
             final_seq_loss += step_loss;
         }
 
@@ -82,7 +83,6 @@ mod tests {
 
         assert!(loss >= 0.0);
         assert!(loss.is_finite());
-
         Ok(())
     }
 }

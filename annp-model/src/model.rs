@@ -79,8 +79,8 @@ impl ANNPModel {
             .map(|i| MicroBlockNode::new(i, config.clone(), use_cuda))
             .collect();
 
-        let node_queues = vec![Vec::with_capacity(64); num_nodes];
-        let next_queues = vec![Vec::with_capacity(64); num_nodes];
+        let node_queues = vec![Vec::with_capacity(config.queue_backpressure); num_nodes];
+        let next_queues = vec![Vec::with_capacity(config.queue_backpressure); num_nodes];
 
         Self {
             config,
@@ -238,9 +238,7 @@ impl ANNPModel {
                             self.topology.routing_tables[node_id].select_next_hop(&p);
 
                         // P2P Decentralized Backpressure: if candidate target queue is full, overflow to neighbor in local P2P mesh
-                        if self.next_queues[next_hop].len()
-                            > self.config.queue_backpressure as usize
-                        {
+                        if self.next_queues[next_hop].len() > self.config.queue_backpressure {
                             if !neighbors.is_empty() {
                                 next_hop = neighbors[p.header.hop_count as usize % neighbors.len()];
                             } else {

@@ -132,26 +132,40 @@ pub fn execute_train(
 
     let (mut stream, total_batches) =
         DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
+    // In ANNP's continual-learning design, "epoch" is a checkpoint-interval,
+    // NOT a full data repetition. The entire dataset is traversed exactly once
+    // across all epochs. train_epochs controls how many checkpoints are saved
+    // and how fine-grained the epoch-summary reporting is.
+    // Repeating the same data multiple times would corrupt the temporal ordering
+    // tracked by last_token_id and cause fast_weight overfitting.
     let batches_per_epoch = (total_batches / train_epochs).max(1);
+
+    logger.log(
+        "DATASET",
+        &format!(
+            "Loaded dataset from: {} ({}). Total batches: {}, Checkpoint interval: every {} batches",
+            dataset_path, format_str, total_batches, batches_per_epoch
+        ),
+    );
 
     if is_resumed && epoch_start_val > 0 {
         let skip_batches = epoch_start_val * batches_per_epoch;
         logger.log(
             "RESUME",
-            &format!("Restoring data cursor: skipping {} batches.", skip_batches),
+            &format!(
+                "Restoring data cursor: skipping {} batches ({} epochs × {} batches/epoch).",
+                skip_batches, epoch_start_val, batches_per_epoch
+            ),
         );
         for _ in 0..skip_batches {
             let _ = stream.next();
         }
     }
 
-    logger.log(
-        "DATASET",
-        &format!(
-            "Loaded dataset from: {} ({}). Total batches: {}, Batches per epoch: {}",
-            dataset_path, format_str, total_batches, batches_per_epoch
-        ),
-    );
+    // Trainer is created once and lives for the entire training run.
+    // This ensures any future stateful fields (e.g. LR schedule, momentum)
+    // persist correctly across batches and epochs.
+    let mut trainer = Trainer::new(train_lr);
 
     for epoch in epoch_start_val..train_epochs {
         logger.log(
@@ -164,6 +178,7 @@ pub fn execute_train(
         let mut rolling_ema = 0.0f32;
         let mut epoch_metrics_acc = annp_model::BatchMetrics::default();
 
+        // Consume the next slice of the stream for this checkpoint interval.
         for batch_idx in 0..batches_per_epoch {
             let res = match stream.next() {
                 Some(r) => r,
@@ -178,7 +193,6 @@ pub fn execute_train(
                 }
             };
             let tensor = res?;
-            let mut trainer = Trainer::new(train_lr);
             let step_loss = trainer.train_step_with_epoch(&mut model, &tensor, epoch)?;
             let batch_metrics = model.extract_batch_metrics();
 
