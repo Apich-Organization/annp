@@ -24,3 +24,5 @@ check.diff
 fix_tests.py
 fix_checkpoint_2.py
 fix_checkpoint.py
+rewrite_cuda.py
+rewrite_cuda2.py

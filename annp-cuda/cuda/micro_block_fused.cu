@@ -43,15 +43,13 @@ __device__ inline float block_reduce_sum(float val, float* s_reduce) {
 
 extern "C" __global__ void fused_micro_block_kernel(
     const float* __restrict__ p_in,
-    const float* __restrict__ k_cache,
-    const float* __restrict__ v_cache,
+    const float* __restrict__ fast_weight,
     const float* __restrict__ w_gate,
     const float* __restrict__ w_up,
     const float* __restrict__ w_down,
     float* __restrict__ p_out,
     int d_head,
     int ffn_dim,
-    int kv_len,
     int norm_strategy,
     float alpha,
     float sphere_radius
@@ -83,52 +81,24 @@ extern "C" __global__ void fused_micro_block_kernel(
     float inv_rms_attn = rsqrtf(sq_sum_attn / (float)d_head + 1e-8f);
     __syncthreads();
 
-    // Step 1: Online FlashAttention
-    if (kv_len > 0) {
-        float best_sim = -1e9f;
-        float scale = rsqrtf((float)d_head) * inv_rms_attn;
-        
-        for (int k = 0; k < kv_len; ++k) {
-            const float* k_ptr = k_cache + k * d_head;
-            float val = 0.0f;
-            for (int i = tid; i < d_head; i += blockDim.x) {
-                val += s_p_in[i] * __ldg(k_ptr + i);
-            }
+    // Step 1: Fast Weight Implicit Memory
+    // attn_out[r] = sum_c(fast_weight[r * d_head + c] * p_in_normed[c])
+    // Wait, s_p_in is NOT normalized yet. But p_in (which is last_p_in) is normalized here.
+    // Let's normalize it first.
+    // inv_rms_attn is already computed above.
+    for (int i = tid; i < d_head; i += blockDim.x) {
+        s_attn[i] = 0.0f;
+    }
+    __syncthreads();
 
-            float dot = block_reduce_sum(val, s_reduce);
-            if (tid == 0) {
-                float score = dot * scale;
-                s_reduce[max_warps_pad + k] = score;
-                if (score > best_sim) best_sim = score;
-            }
-            __syncthreads();
+    // Matrix-vector multiplication: fast_weight (d_head x d_head) * (s_p_in * inv_rms_attn)
+    for (int r = tid; r < d_head; r += blockDim.x) {
+        float sum = 0.0f;
+        for (int c = 0; c < d_head; ++c) {
+            float normed_in = s_p_in[c] * inv_rms_attn;
+            sum += __ldg(fast_weight + r * d_head + c) * normed_in;
         }
-
-        if (tid == 0) {
-            s_reduce[0] = best_sim;
-        }
-        __syncthreads();
-        best_sim = s_reduce[0];
-
-        float sum_exp = 0.0f;
-        if (tid == 0) {
-            for (int i = 0; i < kv_len; i++) {
-                float e = __expf(s_reduce[max_warps_pad + i] - best_sim);
-                s_reduce[max_warps_pad + i] = e;
-                sum_exp += e;
-            }
-            s_reduce[0] = __fdividef(1.0f, sum_exp + 1e-8f);
-        }
-        __syncthreads();
-
-        float inv_sum = s_reduce[0];
-        for (int i = 0; i < kv_len; i++) {
-            float w = s_reduce[max_warps_pad + i] * inv_sum;
-            const float* v_slice = v_cache + i * d_head;
-            for (int d = tid; d < d_head; d += blockDim.x) {
-                s_attn[d] += w * __ldg(v_slice + d);
-            }
-        }
+        s_attn[r] = sum;
     }
     __syncthreads();
 
@@ -178,9 +148,8 @@ extern "C" __global__ void fused_micro_block_kernel(
 
 struct MicroBlockDeviceBufferPool {
     float* d_p_in = nullptr;
-    float* d_k_cache = nullptr;
-    float* d_v_cache = nullptr;
-    float* d_w_gate = nullptr;
+    float* d_fast_weight = nullptr;
+        float* d_w_gate = nullptr;
     float* d_w_up = nullptr;
     float* d_w_down = nullptr;
     float* d_p_out = nullptr;
@@ -191,20 +160,19 @@ struct MicroBlockDeviceBufferPool {
 
     ~MicroBlockDeviceBufferPool() {
         if (d_p_in) { cudaFree(d_p_in); d_p_in = nullptr; }
-        if (d_k_cache) { cudaFree(d_k_cache); d_k_cache = nullptr; }
-        if (d_v_cache) { cudaFree(d_v_cache); d_v_cache = nullptr; }
-        if (d_w_gate) { cudaFree(d_w_gate); d_w_gate = nullptr; }
+        if (d_fast_weight) { cudaFree(d_fast_weight); d_fast_weight = nullptr; }
+                if (d_w_gate) { cudaFree(d_w_gate); d_w_gate = nullptr; }
         if (d_w_up) { cudaFree(d_w_up); d_w_up = nullptr; }
         if (d_w_down) { cudaFree(d_w_down); d_w_down = nullptr; }
         if (d_p_out) { cudaFree(d_p_out); d_p_out = nullptr; }
         cudaGetLastError();
     }
 
-    void ensure_capacity(size_t batch_size, size_t d_head, size_t ffn_dim, size_t kv_len, cudaStream_t stream) {
+    void ensure_capacity(size_t batch_size, size_t d_head, size_t ffn_dim, cudaStream_t stream) {
         last_stream = stream;
 
         size_t pin_elems = batch_size * d_head;
-        size_t kv_elems = kv_len * d_head;
+        size_t fw_elems = d_head * d_head;
         size_t w1_elems = d_head * ffn_dim;
         size_t w2_elems = ffn_dim * d_head;
         size_t max_w_elems = w1_elems > w2_elems ? w1_elems : w2_elems;
@@ -216,12 +184,10 @@ struct MicroBlockDeviceBufferPool {
             CHECK_CUDA(safe_cuda_malloc_async(&d_p_in, pin_cap * sizeof(float), stream));
             CHECK_CUDA(safe_cuda_malloc_async(&d_p_out, pin_cap * sizeof(float), stream));
         }
-        if (kv_elems > kv_cap) {
-            if (d_k_cache) cudaFreeAsync(d_k_cache, stream);
-            if (d_v_cache) cudaFreeAsync(d_v_cache, stream);
-            kv_cap = kv_elems * 2 + 1024;
-            CHECK_CUDA(safe_cuda_malloc_async(&d_k_cache, kv_cap * sizeof(float), stream));
-            CHECK_CUDA(safe_cuda_malloc_async(&d_v_cache, kv_cap * sizeof(float), stream));
+        if (fw_elems > kv_cap) {
+            if (d_fast_weight) cudaFreeAsync(d_fast_weight, stream);
+            kv_cap = fw_elems * 2 + 1024;
+            CHECK_CUDA(safe_cuda_malloc_async(&d_fast_weight, kv_cap * sizeof(float), stream));
         }
         if (max_w_elems > w_cap) {
             if (d_w_gate) cudaFreeAsync(d_w_gate, stream);
@@ -239,8 +205,7 @@ static thread_local MicroBlockDeviceBufferPool g_micro_pool;
 
 extern "C" void launch_fused_micro_block(
     const float* p_in,
-    const float* k_cache,
-    const float* v_cache,
+    const float* fast_weight,
     const float* w_gate,
     const float* w_up,
     const float* w_down,
@@ -248,7 +213,6 @@ extern "C" void launch_fused_micro_block(
     int batch_size,
     int d_head,
     int ffn_dim,
-    int kv_len,
     int norm_strategy,
     float alpha,
     float sphere_radius,
@@ -256,7 +220,7 @@ extern "C" void launch_fused_micro_block(
 ) {
     if (batch_size <= 0 || d_head <= 0 || ffn_dim <= 0) return;
 
-    g_micro_pool.ensure_capacity(batch_size, d_head, ffn_dim, kv_len, stream);
+    g_micro_pool.ensure_capacity(batch_size, d_head, ffn_dim, stream);
 
     bool was_host_copied = false;
     const float* dev_pin = get_device_ptr(p_in, g_micro_pool.d_p_in, batch_size * d_head, stream, &was_host_copied);

@@ -122,9 +122,17 @@ impl MicroBlockNode {
         let active_idx = self.active_subnode;
         let active = &self.subnodes[active_idx];
 
+        let loss_avg = if self.local_loss_count > 0 {
+            self.local_loss_accumulator / self.local_loss_count as f32
+        } else {
+            f32::INFINITY
+        };
+
+        let health_threshold = 1.0 + self.subnodes.len() as f32;
+
         if self.subnodes.len() < self.config.subnode_max
-            && active.health > 2.0
-            && active.credit_stats.variance() > 1e-4
+            && active.health > health_threshold
+            && active.credit_stats.variance() > loss_avg
         {
             let parent_subnode = active.clone();
             let new_subnode_id = self.subnodes.len();
@@ -244,8 +252,9 @@ impl MicroBlockNode {
         let mut best_score = f32::NEG_INFINITY;
         let mut active_idx = 0;
 
+        let decay = 1.0 / (d_head as f32 * self.subnodes.len().max(1) as f32);
         for (i, subnode) in self.subnodes.iter_mut().enumerate() {
-            subnode.health -= 0.01;
+            subnode.health -= decay;
 
             let score = if subnode.credit_stats.count <= 1.0 {
                 f32::INFINITY
@@ -264,7 +273,8 @@ impl MicroBlockNode {
         }
         self.active_subnode = active_idx;
         let active = active_idx;
-        self.subnodes[active].health += 0.02;
+        let recovery = self.subnodes[active].alpha / (d_head as f32);
+        self.subnodes[active].health += recovery;
 
         let token_id = particles[0].header.origin_token_id;
 

@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 7;
+const ANNPB_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
@@ -136,6 +136,7 @@ impl ModelCheckpoint {
                 file.write_all(&sub.credit_stats.count.to_le_bytes())?;
                 file.write_all(&sub.credit_stats.mean.to_le_bytes())?;
                 file.write_all(&sub.credit_stats.m2.to_le_bytes())?;
+                file.write_all(&sub.health.to_le_bytes())?;
 
                 let gate_bytes = unsafe {
                     std::slice::from_raw_parts(
@@ -302,6 +303,12 @@ impl ModelCheckpoint {
                         credit_stats.m2 = f32::from_le_bytes(buf4);
                     }
 
+                    let mut health = 1.0f32;
+                    if version >= 8 {
+                        file.read_exact(&mut buf4)?;
+                        health = f32::from_le_bytes(buf4);
+                    }
+
                     // Read W_gate
                     file.read_exact(&mut buf4)?;
                     let gate_len = u32::from_le_bytes(buf4) as usize;
@@ -337,7 +344,7 @@ impl ModelCheckpoint {
                         alpha,
                         activation_count: sub_act_count,
                         credit_stats,
-                        health: 1.0,
+                        health,
                     });
                 }
 
