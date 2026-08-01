@@ -224,8 +224,7 @@ extern "C" void launch_fused_micro_block(
 
     bool was_host_copied = false;
     const float* dev_pin = get_device_ptr(p_in, g_micro_pool.d_p_in, batch_size * d_head, stream, &was_host_copied);
-    const float* dev_k = get_device_ptr(k_cache, g_micro_pool.d_k_cache, kv_len * d_head, stream, &was_host_copied);
-    const float* dev_v = get_device_ptr(v_cache, g_micro_pool.d_v_cache, kv_len * d_head, stream, &was_host_copied);
+    const float* dev_fast_weight = get_device_ptr(fast_weight, g_micro_pool.d_fast_weight, d_head * d_head, stream, &was_host_copied);
     const float* dev_wgate = get_device_ptr(w_gate, g_micro_pool.d_w_gate, d_head * ffn_dim, stream, &was_host_copied);
     const float* dev_wup = get_device_ptr(w_up, g_micro_pool.d_w_up, d_head * ffn_dim, stream, &was_host_copied);
     const float* dev_wdown = get_device_ptr(w_down, g_micro_pool.d_w_down, ffn_dim * d_head, stream, &was_host_copied);
@@ -242,8 +241,8 @@ extern "C" void launch_fused_micro_block(
     size_t shared_mem_bytes = (3 * dh_pad + ffn_pad + max_warps_pad) * sizeof(float);
 
     fused_micro_block_kernel<<<blocks, threads_per_block, shared_mem_bytes, stream>>>(
-        dev_pin, dev_k, dev_v, dev_wgate, dev_wup, dev_wdown, dev_pout,
-        d_head, ffn_dim, kv_len, norm_strategy, alpha, sphere_radius
+        dev_pin, dev_fast_weight, dev_wgate, dev_wup, dev_wdown, dev_pout,
+        d_head, ffn_dim, norm_strategy, alpha, sphere_radius
     );
 
     copy_back_if_host(p_out, dev_pout, batch_size * d_head, stream);
