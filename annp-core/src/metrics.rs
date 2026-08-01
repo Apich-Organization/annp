@@ -1,33 +1,54 @@
 /// Mathematical metrics for Halting conditions and Attention Entropy evaluation.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct OnlineStats {
-    pub count: u64,
+    pub count: f32,
     pub mean: f32,
     pub m2: f32,
+    pub gamma: f32,
+}
+
+impl Default for OnlineStats {
+    fn default() -> Self {
+        Self {
+            count: 0.0,
+            mean: 0.0,
+            m2: 0.0,
+            gamma: 0.99,
+        }
+    }
 }
 
 impl OnlineStats {
+    pub fn new(gamma: f32) -> Self {
+        Self {
+            count: 0.0,
+            mean: 0.0,
+            m2: 0.0,
+            gamma,
+        }
+    }
+
     pub fn observe(&mut self, value: f32) {
         if !value.is_finite() {
             return;
         }
-        self.count += 1;
+        self.count = self.count * self.gamma + 1.0;
         let delta = value - self.mean;
-        self.mean += delta / self.count as f32;
-        self.m2 += delta * (value - self.mean);
+        self.mean += delta / self.count;
+        self.m2 = self.m2 * self.gamma + delta * (value - self.mean);
     }
 
     pub fn variance(&self) -> f32 {
-        if self.count > 1 {
-            (self.m2 / (self.count - 1) as f32).max(0.0)
+        if self.count > 1.0 {
+            (self.m2 / (self.count - 1.0)).max(0.0)
         } else {
             0.0
         }
     }
 
     pub fn standard_error(&self) -> f32 {
-        if self.count > 1 {
-            (self.variance() / self.count as f32).sqrt()
+        if self.count > 1.0 {
+            (self.variance() / self.count).sqrt()
         } else {
             f32::INFINITY
         }
@@ -39,6 +60,26 @@ impl OnlineStats {
     pub fn pessimistic_value(&self) -> f32 {
         self.mean - self.standard_error()
     }
+
+    pub fn decay(&mut self) {
+        self.count *= self.gamma;
+        self.m2 *= self.gamma;
+    }
+}
+
+/// Approximate sampling from a Student-t distribution with `df` degrees of freedom
+/// using 1st order Cornish-Fisher expansion.
+pub fn student_t_sample_approximation(df: f32) -> f32 {
+    let u1: f32 = rand::random::<f32>().max(f32::MIN_POSITIVE);
+    let u2: f32 = rand::random::<f32>();
+    let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
+
+    if df < 1.0 {
+        return z0; // Fallback
+    }
+    
+    // Cornish-Fisher expansion for heavier tails of Student-t
+    z0 * (1.0 + (z0 * z0 + 1.0) / (4.0 * df))
 }
 
 /// Compute L2 norm difference between input and output particle payloads: ||p_out - p_in||_2

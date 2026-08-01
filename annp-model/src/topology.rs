@@ -71,15 +71,8 @@ impl RoutingTable {
             return 0;
         }
 
-        // Mathematical UCB1 Algorithm for local Explore-Exploit routing (no global normalization or arbitrary z-scores)
-        // Score = Content_Similarity + C * sqrt(ln(total_activations) / edge_activations)
-        let total_activations = self
-            .edge_credit
-            .iter()
-            .map(|stats| stats.count)
-            .sum::<u64>()
-            .max(1);
-        let log_total = (total_activations as f32).ln().max(0.001);
+        // --- Student-t Thompson Sampling for Routing ---
+        // Score = Content_Similarity + Thompson_Sample(Credit_Distribution)
 
         let mut best = 0;
         let mut best_score = f32::NEG_INFINITY;
@@ -90,21 +83,22 @@ impl RoutingTable {
                 dot += particle.payload[d] * self.weights[d * num_neighbors + k];
             }
 
-            let ucb_score = if let Some(stats) = self.edge_credit.get(k) {
-                if stats.count == 0 {
+            let score = if let Some(stats) = self.edge_credit.get(k) {
+                if stats.count <= 1.0 {
                     f32::INFINITY
                 } else {
                     let mean = stats.mean;
-                    let std_dev = stats.variance().sqrt().max(1e-4);
-                    let explore = std_dev * (1.0 * log_total / stats.count as f32).sqrt();
-                    dot + mean + explore
+                    let se = stats.standard_error();
+                    let df = (stats.count - 1.0).max(1.0);
+                    let t_sample = annp_core::student_t_sample_approximation(df);
+                    dot + mean + se * t_sample
                 }
             } else {
                 f32::INFINITY
             };
 
-            if ucb_score > best_score {
-                best_score = ucb_score;
+            if score > best_score {
+                best_score = score;
                 best = k;
             }
         }

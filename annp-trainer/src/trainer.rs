@@ -57,6 +57,7 @@ mod tests {
             max_hop: 20,
             min_hop: 2,
             subnode_max: 8,
+            weight_decay: 1e-4,
         }
     }
 

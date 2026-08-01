@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
-const ANNPB_VERSION: u32 = 6;
+const ANNPB_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
@@ -342,8 +342,13 @@ impl ModelCheckpoint {
 
                     let mut credit_stats = OnlineStats::default();
                     if version >= 4 {
-                        file.read_exact(&mut buf8)?;
-                        credit_stats.count = u64::from_le_bytes(buf8);
+                        if version >= 7 {
+                            file.read_exact(&mut buf4)?;
+                            credit_stats.count = f32::from_le_bytes(buf4);
+                        } else {
+                            file.read_exact(&mut buf8)?;
+                            credit_stats.count = u64::from_le_bytes(buf8) as f32;
+                        }
                         file.read_exact(&mut buf4)?;
                         credit_stats.mean = f32::from_le_bytes(buf4);
                         file.read_exact(&mut buf4)?;
@@ -505,13 +510,19 @@ impl ModelCheckpoint {
                 file.read_exact(&mut buf4)?;
                 let ec_len = u32::from_le_bytes(buf4) as usize;
                 for _ in 0..ec_len {
-                    file.read_exact(&mut buf8)?;
-                    let count = u64::from_le_bytes(buf8);
+                    let mut count_f32 = 0.0;
+                    if version >= 7 {
+                        file.read_exact(&mut buf4)?;
+                        count_f32 = f32::from_le_bytes(buf4);
+                    } else {
+                        file.read_exact(&mut buf8)?;
+                        count_f32 = u64::from_le_bytes(buf8) as f32;
+                    }
                     file.read_exact(&mut buf4)?;
                     let mean = f32::from_le_bytes(buf4);
                     file.read_exact(&mut buf4)?;
                     let m2 = f32::from_le_bytes(buf4);
-                    edge_credit.push(OnlineStats { count, mean, m2 });
+                    edge_credit.push(OnlineStats { count: count_f32, mean, m2, gamma: 0.99 });
                 }
             }
 
@@ -561,9 +572,6 @@ impl ModelCheckpoint {
                             w_gate: s.w_gate.clone(),
                             w_up: s.w_up.clone(),
                             w_down: s.w_down.clone(),
-                            v_gate: vec![0.0f32; s.w_gate.len()],
-                            v_up: vec![0.0f32; s.w_up.len()],
-                            v_down: vec![0.0f32; s.w_down.len()],
                             alpha: s.alpha,
                             activation_count: s.activation_count,
                             credit_stats: s.credit_stats,

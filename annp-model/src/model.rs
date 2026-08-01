@@ -392,9 +392,10 @@ mod tests {
             d_head: 64,
             ffn_expansion: 8,
             initial_energy: 1.0,
-            max_hop: 10,
-            min_hop: 2,
+            max_hop: 100,
+            min_hop: 5,
             subnode_max: 8,
+            weight_decay: 1e-4,
         }
     }
 
@@ -407,7 +408,7 @@ mod tests {
         let d_model = 4 * 64;
         let input_tensor = Tensor::from_vec(vec![0.1f32; 2 * d_model], (2, d_model), &device)?;
 
-        let (output_tensor, loss) = model.forward(&input_tensor, 0)?;
+        let (output_tensor, loss) = model.forward(&input_tensor, 0, None)?;
         assert_eq!(output_tensor.dims2()?, (2, d_model));
         assert!(loss >= 0.0);
 

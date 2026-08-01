@@ -35,6 +35,7 @@ pub struct TrainConfig {
     pub learning_rate: f32,
     pub dataset_path: Option<String>,
     pub dataset_format: Option<String>,
+    pub weight_decay: Option<f32>,
 }
 
 impl Default for AnnpTomlConfig {
@@ -59,6 +60,7 @@ impl Default for AnnpTomlConfig {
                 learning_rate: 0.02,
                 dataset_path: Some("synthetic".to_string()),
                 dataset_format: Some("synthetic".to_string()),
+                weight_decay: Some(1e-4),
             },
         }
     }
@@ -88,6 +90,7 @@ impl AnnpTomlConfig {
             max_hop: self.model.max_hop,
             min_hop: self.model.min_hop,
             subnode_max: self.eviction.subnode_max.unwrap_or(8),
+            weight_decay: self.train.weight_decay.unwrap_or(1e-4),
         }
     }
 }

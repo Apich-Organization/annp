@@ -57,7 +57,9 @@ impl MicroBlockNode {
         let ffn_dim = d_head * config.ffn_expansion;
 
         let alpha_init = 1.0 / (d_head as f32).sqrt();
-        let mut primary_subnode = Subnode::new_random(0, d_head, ffn_dim, alpha_init);
+        let memory_size = (d_head * d_head) as f32;
+        let gamma = 1.0 - 1.0 / memory_size.max(1.0);
+        let mut primary_subnode = Subnode::new_random(0, d_head, ffn_dim, alpha_init, gamma);
         if use_cuda {
             primary_subnode.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
                 &primary_subnode.w_gate,
@@ -165,7 +167,7 @@ impl MicroBlockNode {
     pub fn try_subnode_neurogenesis(&mut self) -> bool {
         let active = &self.subnodes[self.active_subnode].credit_stats;
         if self.subnodes.len() < self.config.subnode_max
-            && active.count > 1
+            && active.count > 1.0
             && active.optimistic_value() <= 0.0
         {
             let parent_subnode = self
@@ -179,6 +181,7 @@ impl MicroBlockNode {
                 &parent_subnode,
                 self.config.d_head,
                 self.config.d_head * self.config.ffn_expansion,
+                1.0 - 1.0 / (self.config.d_head * self.config.d_head) as f32,
             );
             if self.use_cuda {
                 new_subnode.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
@@ -293,24 +296,23 @@ impl MicroBlockNode {
         let d_head = self.config.d_head;
         let ffn_dim = d_head * self.config.ffn_expansion;
 
-        // --- UCB Multi-Armed Bandit Active Subnode Selection ---
-        let total_activations: u64 = self.subnodes.iter().map(|s| s.credit_stats.count).sum();
-        let ln_total = (total_activations as f32).ln().max(0.0);
-        let mut best_ucb = f32::NEG_INFINITY;
+        // --- Student-t Thompson Sampling Active Subnode Selection ---
+        let mut best_score = f32::NEG_INFINITY;
         let mut active_idx = 0;
 
         for (i, subnode) in self.subnodes.iter().enumerate() {
-            let ucb = if subnode.credit_stats.count == 0 {
+            let score = if subnode.credit_stats.count <= 1.0 {
                 f32::INFINITY // Always explore newly born subnodes
             } else {
-                let exploit = subnode.credit_stats.mean;
-                // Adaptive exploration scale based on empirical standard deviation (UCB-Tuned)
-                let std_dev = subnode.credit_stats.variance().sqrt().max(1e-4);
-                let explore = std_dev * (1.0 * ln_total / subnode.credit_stats.count as f32).sqrt();
-                exploit + explore
+                let mean = subnode.credit_stats.mean;
+                let se = subnode.credit_stats.standard_error();
+                let df = (subnode.credit_stats.count - 1.0).max(1.0);
+                
+                let t_sample = annp_core::student_t_sample_approximation(df);
+                mean + se * t_sample
             };
-            if ucb > best_ucb {
-                best_ucb = ucb;
+            if score > best_score {
+                best_score = score;
                 active_idx = i;
             }
         }
@@ -353,7 +355,7 @@ impl MicroBlockNode {
             self.local_loss_count += 1;
 
             if let Some(lr) = learning_rate {
-                let weight_decay = 1e-4f32;
+                let weight_decay = self.config.weight_decay;
                 let wd_factor = 1.0 - lr * weight_decay;
 
                 let kv_len = self.k_cache.len() / d_head;
@@ -523,8 +525,7 @@ impl MicroBlockNode {
                     }
                 }
 
-                let err_mag: f32 = local_err.iter().map(|&x| x.abs()).sum::<f32>() / d_head as f32;
-                self.subnodes[active].credit_stats.observe(-err_mag);
+                // Credit stats update is now done via batch average below to reduce variance
             }
         }
 
@@ -588,6 +589,9 @@ impl MicroBlockNode {
         // We only use the first particle for KV cache update, representing the batch collective
         let p_clone = particles[0].clone();
 
+        let mut total_batch_credit = 0.0f32;
+        let mut valid_credit_count = 0.0f32;
+
         for p_ref in particles.iter_mut() {
             let (agreement_before, ta_before) = self.local_agreement(p_ref, &p_ref.payload);
             let previous_credit = p_ref.credit;
@@ -604,7 +608,8 @@ impl MicroBlockNode {
             if let (Some(before), Some(after)) = (agreement_before, agreement_after) {
                 p_ref.credit = after - before;
                 p_ref.credit_valid = true;
-                self.subnodes[active].credit_stats.observe(p_ref.credit);
+                total_batch_credit += p_ref.credit;
+                valid_credit_count += 1.0;
                 self.sum_credit_volatility += p_ref.credit.abs();
             }
 
@@ -627,6 +632,11 @@ impl MicroBlockNode {
 
             let energy: f32 = p_ref.payload.iter().map(|&x| x * x).sum();
             self.sum_squared_energy += energy;
+        }
+
+        if valid_credit_count > 0.0 {
+            let mean_credit = total_batch_credit / valid_credit_count;
+            self.subnodes[active].credit_stats.observe(mean_credit);
         }
 
         self.update_kv_cache(&p_clone);
@@ -693,7 +703,7 @@ mod tests {
         let p2 = Particle::new(ParticleHeader::new(1, 0, 1.0), vec![0.8f32; 64]);
         let mut batch = vec![p1, p2];
 
-        node.process_batch(&mut batch, true);
+        node.process_batch(&mut batch, Some(0.01));
         assert_eq!(node.activation_count, 2);
         assert_eq!(node.cumulative_sequence_len, 2);
 

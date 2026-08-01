@@ -17,6 +17,7 @@ fn main() -> candle_core::Result<()> {
         max_hop: 100,
         min_hop: 5,
         subnode_max: 8,
+        weight_decay: 1e-4,
     };
 
     let device = Device::Cpu;
@@ -32,7 +33,7 @@ fn main() -> candle_core::Result<()> {
         input_embeddings.shape()
     );
 
-    let (output_embeddings, _) = model.forward(&input_embeddings, 0)?;
+    let (output_embeddings, _) = model.forward(&input_embeddings, 0, None)?;
     println!(
         "Output Sequence Tensor Shape: {:?}",
         output_embeddings.shape()

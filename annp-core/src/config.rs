@@ -20,6 +20,8 @@ pub struct MicroBlockConfig {
     pub min_hop: u16,
     /// Maximum number of internal subnodes per micro-block container (default: 8)
     pub subnode_max: usize,
+    /// L2 Weight decay factor for optimization (default: 1e-4)
+    pub weight_decay: f32,
 }
 
 impl Default for MicroBlockConfig {
@@ -34,6 +36,7 @@ impl Default for MicroBlockConfig {
             max_hop: 200,
             min_hop: 10,
             subnode_max: 8,
+            weight_decay: 1e-4,
         }
     }
 }

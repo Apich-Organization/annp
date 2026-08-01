@@ -8,7 +8,8 @@ fn test_subnode_initialization() {
     let ffn_dim = 256;
     let alpha = 1.0;
 
-    let subnode = Subnode::new_random(0, d_head, ffn_dim, alpha);
+    let gamma = 0.99;
+    let subnode = Subnode::new_random(0, d_head, ffn_dim, alpha, gamma);
 
     assert_eq!(subnode.subnode_id, 0);
     assert_eq!(subnode.w_gate.len(), d_head * ffn_dim);
@@ -29,8 +30,9 @@ fn test_subnode_spawn_from_parent() {
     let ffn_dim = 256;
     let alpha = 1.0;
 
-    let parent = Subnode::new_random(0, d_head, ffn_dim, alpha);
-    let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim);
+    let gamma = 0.99;
+    let parent = Subnode::new_random(0, d_head, ffn_dim, alpha, gamma);
+    let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim, gamma);
 
     assert_eq!(child.subnode_id, 1);
 

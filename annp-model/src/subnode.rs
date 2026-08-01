@@ -8,9 +8,6 @@ pub struct Subnode {
     pub w_gate: Vec<f32>, // [d_head, ffn_dim]
     pub w_up: Vec<f32>,   // [d_head, ffn_dim]
     pub w_down: Vec<f32>, // [ffn_dim, d_head]
-    pub v_gate: Vec<f32>,
-    pub v_up: Vec<f32>,
-    pub v_down: Vec<f32>,
     pub alpha: f32,
     pub activation_count: u64,
     /// Empirical local credit; reset on checkpoint restore because it is an
@@ -26,9 +23,6 @@ impl Clone for Subnode {
             w_gate: self.w_gate.clone(),
             w_up: self.w_up.clone(),
             w_down: self.w_down.clone(),
-            v_gate: self.v_gate.clone(),
-            v_up: self.v_up.clone(),
-            v_down: self.v_down.clone(),
             alpha: self.alpha,
             activation_count: self.activation_count,
             credit_stats: self.credit_stats,
@@ -38,7 +32,7 @@ impl Clone for Subnode {
 }
 
 impl Subnode {
-    pub fn new_random(subnode_id: usize, d_head: usize, ffn_dim: usize, alpha_init: f32) -> Self {
+    pub fn new_random(subnode_id: usize, d_head: usize, ffn_dim: usize, alpha_init: f32, gamma: f32) -> Self {
         let mut rng = rand::rng();
         let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
 
@@ -54,21 +48,14 @@ impl Subnode {
             .map(|_| rng.random_range(-w_down_scale..w_down_scale))
             .collect();
 
-        let v_gate = vec![0.0f32; d_head * ffn_dim];
-        let v_up = vec![0.0f32; d_head * ffn_dim];
-        let v_down = vec![0.0f32; ffn_dim * d_head];
-
         Self {
             subnode_id,
             w_gate,
             w_up,
             w_down,
-            v_gate,
-            v_up,
-            v_down,
             alpha: alpha_init,
             activation_count: 0,
-            credit_stats: OnlineStats::default(),
+            credit_stats: OnlineStats::new(gamma),
             d_weights: None,
         }
     }
@@ -79,6 +66,7 @@ impl Subnode {
         parent: &Subnode,
         d_head: usize,
         ffn_dim: usize,
+        gamma: f32,
     ) -> Self {
         let mut rng = rand::rng();
         // Base perturbation on standard deviations rather than fixed 0.01
@@ -96,21 +84,14 @@ impl Subnode {
             .collect();
         let w_down = vec![0.0f32; parent.w_down.len()];
 
-        let v_gate = vec![0.0f32; parent.w_gate.len()];
-        let v_up = vec![0.0f32; parent.w_up.len()];
-        let v_down = vec![0.0f32; parent.w_down.len()];
-
         Self {
             subnode_id,
             w_gate,
             w_up,
             w_down,
-            v_gate,
-            v_up,
-            v_down,
             alpha: parent.alpha,
             activation_count: 0,
-            credit_stats: OnlineStats::default(),
+            credit_stats: OnlineStats::new(gamma),
             d_weights: None,
         }
     }
@@ -125,7 +106,8 @@ mod tests {
         let d_head = 64;
         let ffn_dim = 128;
         let alpha = 0.5;
-        let node = Subnode::new_random(1, d_head, ffn_dim, alpha);
+        let gamma = 0.99;
+        let node = Subnode::new_random(1, d_head, ffn_dim, alpha, gamma);
 
         assert_eq!(node.subnode_id, 1);
         assert_eq!(node.alpha, 0.5);
@@ -135,23 +117,16 @@ mod tests {
         assert_eq!(node.w_gate.len(), w_len);
         assert_eq!(node.w_up.len(), w_len);
         assert_eq!(node.w_down.len(), w_len);
-
-        assert_eq!(node.v_gate.len(), w_len);
-        assert_eq!(node.v_up.len(), w_len);
-        assert_eq!(node.v_down.len(), w_len);
-
-        assert!(node.v_gate.iter().all(|&v| v == 0.0));
-        assert!(node.v_up.iter().all(|&v| v == 0.0));
-        assert!(node.v_down.iter().all(|&v| v == 0.0));
     }
 
     #[test]
     fn test_spawn_from_parent() {
         let d_head = 32;
         let ffn_dim = 64;
-        let parent = Subnode::new_random(0, d_head, ffn_dim, 0.7);
+        let gamma = 0.99;
+        let parent = Subnode::new_random(0, d_head, ffn_dim, 0.7, gamma);
 
-        let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim);
+        let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim, gamma);
 
         assert_eq!(child.subnode_id, 1);
         assert_eq!(child.alpha, 0.7);
@@ -169,6 +144,5 @@ mod tests {
         );
 
         assert!(child.w_down.iter().all(|&w| w == 0.0));
-        assert!(child.v_gate.iter().all(|&v| v == 0.0));
     }
 }
