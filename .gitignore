@@ -19,3 +19,4 @@ stage_1/
 config_test_1.toml
 config_test.toml
 config_test_random.toml
+check.patch
