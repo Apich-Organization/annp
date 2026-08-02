@@ -260,13 +260,24 @@ mod tests {
         assert_eq!(fields[1], "1"); // epoch
         assert_eq!(fields[2], "42"); // batch_idx
 
-        // Verify that all 10 metric fields are formatted with exactly 8 decimal places
-        for field in &fields[3..13] {
+        // Verify that all 10 metric fields are formatted with exactly 8 or 12 decimal places
+        for field in &fields[5..13] {
             let parts: Vec<&str> = field.split('.').collect();
             assert_eq!(parts.len(), 2, "Field {} is missing decimal point", field);
             assert_eq!(
                 parts[1].len(),
                 8,
+                "Field {} does not have 8 decimal places",
+                field
+            );
+        }
+
+        for field in &fields[3..4] {
+            let parts: Vec<&str> = field.split('.').collect();
+            assert_eq!(parts.len(), 2, "Field {} is missing decimal point", field);
+            assert_eq!(
+                parts[1].len(),
+                12,
                 "Field {} does not have 8 decimal places",
                 field
             );
