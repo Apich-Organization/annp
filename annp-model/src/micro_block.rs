@@ -315,7 +315,7 @@ impl MicroBlockNode {
             start = end;
         }
 
-        // Health decay: each subnode loses health each sub-batch regardless of selection.
+        // Health decay: each subnode loses health each batch regardless of selection.
         //
         // Rate = 1/d_head (fixed, not proportional to subnode count).
         // WHY FIXED? If decay ∝ 1/len(subnodes), adding more subnodes would slow each one's
