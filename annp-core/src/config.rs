@@ -32,6 +32,34 @@ pub struct MicroBlockConfig {
     pub queue_backpressure: usize,
     /// Threshold for node health calculation base (default: 1.0)
     pub health_base: f32,
+    /// Damping factor applied to negative credit when updating subnode health (default: 0.5)
+    #[serde(default = "default_negative_credit_damping")]
+    pub negative_credit_damping: f32,
+    /// Number of consecutive negative credits before a particle spontaneously halts (default: 2)
+    #[serde(default = "default_early_halt_streak")]
+    pub early_halt_streak: usize,
+    /// Scale factor for positional encoding injection in tokenizer (default: 0.1)
+    #[serde(default = "default_pos_enc_scale")]
+    pub pos_enc_scale: f32,
+    /// Base frequency for positional encoding (default: 0.05)
+    #[serde(default = "default_pos_base_freq")]
+    pub pos_base_freq: f32,
+}
+
+fn default_negative_credit_damping() -> f32 {
+    0.5
+}
+
+fn default_early_halt_streak() -> usize {
+    2
+}
+
+fn default_pos_enc_scale() -> f32 {
+    0.1
+}
+
+fn default_pos_base_freq() -> f32 {
+    0.05
 }
 
 impl Default for MicroBlockConfig {
@@ -52,6 +80,10 @@ impl Default for MicroBlockConfig {
             step_safety_margin: 20,
             queue_backpressure: 64,
             health_base: 1.0,
+            negative_credit_damping: default_negative_credit_damping(),
+            early_halt_streak: default_early_halt_streak(),
+            pos_enc_scale: default_pos_enc_scale(),
+            pos_base_freq: default_pos_base_freq(),
         }
     }
 }

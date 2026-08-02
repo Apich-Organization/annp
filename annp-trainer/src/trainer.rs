@@ -104,6 +104,7 @@ mod tests {
             health_base: 1.0,
             queue_backpressure: 64,
             step_safety_margin: 20,
+            ..MicroBlockConfig::default()
         }
     }
 

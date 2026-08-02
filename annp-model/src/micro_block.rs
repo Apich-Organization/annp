@@ -3,10 +3,6 @@ use annp_core::{MicroBlockConfig, Particle, RMS_EPSILON};
 use annp_cuda;
 use rand::Rng;
 
-/// Damping factor applied to negative credit when updating subnode health
-/// (gentler penalty to prevent premature pruning from transient noise)
-const NEGATIVE_CREDIT_DAMPING: f32 = 0.5;
-
 /// # MicroBlockNode — ANNP's fundamental decentralized compute cell
 ///
 /// Each node processes particle streams independently with no global coordination.
@@ -820,15 +816,19 @@ impl MicroBlockNode {
             // when fast_weight is not yet well-trained). Two consecutive negatives provides
             // a stronger evidence threshold without requiring a tunable parameter.
             //
-            // Note: both previous_credit_valid and credit_valid must be true to ensure
-            // we're comparing meaningful measurements, not initialization artifacts
-            // (credit_valid=false means no context was available; see particle.rs).
-            if !p_ref.header.halted
-                && previous_credit_valid
-                && p_ref.credit_valid
-                && previous_credit <= 0.0
-                && p_ref.credit <= 0.0
-            {
+            // Early halting: if a particle receives negative credit for consecutive
+            // sub-batches at this node, it spontaneously halts.
+            // Configurable via `config.early_halt_streak` (default: 2).
+            let should_halt = if self.config.early_halt_streak <= 1 {
+                p_ref.credit_valid && p_ref.credit <= 0.0
+            } else {
+                previous_credit_valid
+                    && p_ref.credit_valid
+                    && previous_credit <= 0.0
+                    && p_ref.credit <= 0.0
+            };
+
+            if !p_ref.header.halted && should_halt {
                 p_ref.header.halted = true;
             }
 
@@ -850,8 +850,8 @@ impl MicroBlockNode {
                 self.subnodes[active].health += mean_credit;
             } else {
                 // Negative credit: gentler penalty to avoid premature death from noise.
-                // A subnode needs sustained poor performance (not one bad batch) to be replaced.
-                self.subnodes[active].health += mean_credit * NEGATIVE_CREDIT_DAMPING;
+                // Configured via `config.negative_credit_damping` (default: 0.5).
+                self.subnodes[active].health += mean_credit * self.config.negative_credit_damping;
             }
         }
 

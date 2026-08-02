@@ -26,6 +26,10 @@ pub struct ModelSection {
     pub health_base: Option<f32>,
     pub ingress_ratio: Option<f32>,
     pub k_neighbors: Option<usize>,
+    pub negative_credit_damping: Option<f32>,
+    pub early_halt_streak: Option<usize>,
+    pub pos_enc_scale: Option<f32>,
+    pub pos_base_freq: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +65,10 @@ impl Default for AnnpTomlConfig {
                 health_base: Some(1.0),
                 ingress_ratio: Some(0.1),
                 k_neighbors: Some(4),
+                negative_credit_damping: Some(0.5),
+                early_halt_streak: Some(2),
+                pos_enc_scale: Some(0.1),
+                pos_base_freq: Some(0.05),
             },
             eviction: EvictionSection {
                 subnode_max: Some(8),
@@ -108,6 +116,10 @@ impl AnnpTomlConfig {
             step_safety_margin: self.model.step_safety_margin.unwrap_or(20),
             queue_backpressure: self.model.queue_backpressure.unwrap_or(64),
             health_base: self.model.health_base.unwrap_or(1.0),
+            negative_credit_damping: self.model.negative_credit_damping.unwrap_or(0.5),
+            early_halt_streak: self.model.early_halt_streak.unwrap_or(2),
+            pos_enc_scale: self.model.pos_enc_scale.unwrap_or(0.1),
+            pos_base_freq: self.model.pos_base_freq.unwrap_or(0.05),
         }
     }
 }

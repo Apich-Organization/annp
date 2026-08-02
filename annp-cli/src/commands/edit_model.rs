@@ -12,6 +12,10 @@ pub fn execute_edit_model(
     min_hop: Option<u16>,
     initial_energy: Option<f32>,
     weight_decay: Option<f32>,
+    negative_credit_damping: Option<f32>,
+    early_halt_streak: Option<usize>,
+    pos_enc_scale: Option<f32>,
+    pos_base_freq: Option<f32>,
     epoch: Option<usize>,
     stage: Option<usize>,
     reset_state: bool,
@@ -72,6 +76,34 @@ pub fn execute_edit_model(
             ckpt.config.weight_decay, val
         );
         ckpt.config.weight_decay = val;
+    }
+    if let Some(val) = negative_credit_damping {
+        println!(
+            "  - Override negative_credit_damping: {} -> {}",
+            ckpt.config.negative_credit_damping, val
+        );
+        ckpt.config.negative_credit_damping = val;
+    }
+    if let Some(val) = early_halt_streak {
+        println!(
+            "  - Override early_halt_streak: {} -> {}",
+            ckpt.config.early_halt_streak, val
+        );
+        ckpt.config.early_halt_streak = val;
+    }
+    if let Some(val) = pos_enc_scale {
+        println!(
+            "  - Override pos_enc_scale: {} -> {}",
+            ckpt.config.pos_enc_scale, val
+        );
+        ckpt.config.pos_enc_scale = val;
+    }
+    if let Some(val) = pos_base_freq {
+        println!(
+            "  - Override pos_base_freq: {} -> {}",
+            ckpt.config.pos_base_freq, val
+        );
+        ckpt.config.pos_base_freq = val;
     }
 
     // 5. Stage / Epoch Overrides
@@ -186,6 +218,10 @@ mod tests {
             Some(4),    // min_hop
             Some(20.0), // initial_energy
             Some(0.01), // weight_decay
+            Some(0.25), // negative_credit_damping
+            Some(3),    // early_halt_streak
+            Some(0.2),  // pos_enc_scale
+            Some(0.08), // pos_base_freq
             Some(10),   // epoch
             Some(3),    // stage
             false,
@@ -210,6 +246,10 @@ mod tests {
         assert_eq!(updated.config.min_hop, 4);
         assert!((updated.config.initial_energy - 20.0).abs() < 1e-6);
         assert!((updated.config.weight_decay - 0.01).abs() < 1e-6);
+        assert!((updated.config.negative_credit_damping - 0.25).abs() < 1e-6);
+        assert_eq!(updated.config.early_halt_streak, 3);
+        assert!((updated.config.pos_enc_scale - 0.2).abs() < 1e-6);
+        assert!((updated.config.pos_base_freq - 0.08).abs() < 1e-6);
 
         let _ = fs::remove_file(ckpt_path);
         let _ = fs::remove_file(bak_path);
@@ -245,6 +285,10 @@ mod tests {
 
         let res = execute_edit_model(
             ckpt_path.clone(),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,

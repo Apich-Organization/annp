@@ -47,8 +47,14 @@ impl AnnpTokenizer {
         self.inner.decode_piece_ids(ids).unwrap_or_default()
     }
 
-    /// Generate deterministic embedding vector for a token at a given sequence position
-    pub fn token_embedding(token_id: u32, pos: usize, d_model: usize) -> Vec<f32> {
+    /// Generate deterministic embedding vector for a token at a given sequence position with custom positional encoding
+    pub fn token_embedding_with_config(
+        token_id: u32,
+        pos: usize,
+        d_model: usize,
+        pos_base_freq: f32,
+        pos_enc_scale: f32,
+    ) -> Vec<f32> {
         let mut tok_vec = Vec::with_capacity(d_model);
         let mut seed = (token_id as u64)
             .wrapping_mul(0x9E3779B97F4A7C15)
@@ -68,10 +74,15 @@ impl AnnpTokenizer {
         let mut out = Vec::with_capacity(d_model);
         for (d, &tok_val) in tok_vec.iter().enumerate().take(d_model) {
             let pos_enc =
-                (pos as f32 * POS_BASE_FREQ + d as f32 * DIM_BASE_FREQ).sin() * POS_ENC_SCALE;
+                (pos as f32 * pos_base_freq + d as f32 * DIM_BASE_FREQ).sin() * pos_enc_scale;
             out.push(tok_val / rms + pos_enc);
         }
         out
+    }
+
+    /// Generate deterministic embedding vector for a token at a given sequence position using default positional encoding parameters
+    pub fn token_embedding(token_id: u32, pos: usize, d_model: usize) -> Vec<f32> {
+        Self::token_embedding_with_config(token_id, pos, d_model, POS_BASE_FREQ, POS_ENC_SCALE)
     }
 
     pub fn encode_ids_to_tensor(

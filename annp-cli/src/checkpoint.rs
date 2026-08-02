@@ -8,7 +8,7 @@ use std::path::Path;
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
 // ANNPB versioning strategy: forward-compatible. Older checkpoints can be loaded by
 // newer code. Every time a new persisted field is added, this version MUST be incremented.
-const ANNPB_VERSION: u32 = 9;
+const ANNPB_VERSION: u32 = 10;
 
 /// Per-subnode checkpoint data.
 ///
@@ -673,5 +673,60 @@ mod tests {
 
         let _ = fs::remove_file(bin_path);
         let _ = fs::remove_file(json_path);
+    }
+
+    #[test]
+    fn test_checkpoint_v10_config_persistence_and_backward_compatibility() {
+        let config = MicroBlockConfig {
+            mesh_rows: 2,
+            mesh_cols: 2,
+            d_head: 16,
+            negative_credit_damping: 0.35,
+            early_halt_streak: 4,
+            pos_enc_scale: 0.15,
+            pos_base_freq: 0.08,
+            ..MicroBlockConfig::default()
+        };
+
+        let model = ANNPModel::new(4, 2, config, Device::Cpu);
+        let ckpt = ModelCheckpoint::extract_from_model(&model, 2, 8);
+
+        let tmp_dir = std::env::temp_dir();
+        let bin_path = tmp_dir.join("test_checkpoint_v10.annpb");
+
+        ckpt.save(&bin_path).unwrap();
+        let loaded = ModelCheckpoint::load(&bin_path).unwrap();
+
+        assert!((loaded.config.negative_credit_damping - 0.35).abs() < 1e-6);
+        assert_eq!(loaded.config.early_halt_streak, 4);
+        assert!((loaded.config.pos_enc_scale - 0.15).abs() < 1e-6);
+        assert!((loaded.config.pos_base_freq - 0.08).abs() < 1e-6);
+
+        // Test legacy JSON config deserialization (without new fields)
+        let legacy_json = r#"{
+            "num_shards": 4,
+            "mesh_rows": 10,
+            "mesh_cols": 10,
+            "d_head": 64,
+            "ffn_expansion": 8,
+            "initial_energy": 1.0,
+            "max_hop": 200,
+            "min_hop": 10,
+            "subnode_max": 8,
+            "weight_decay": 0.0001,
+            "ingress_ratio": 0.1,
+            "k_neighbors": 4,
+            "step_safety_margin": 20,
+            "queue_backpressure": 64,
+            "health_base": 1.0
+        }"#;
+
+        let legacy_config: MicroBlockConfig = serde_json::from_str(legacy_json).unwrap();
+        assert!((legacy_config.negative_credit_damping - 0.5).abs() < 1e-6);
+        assert_eq!(legacy_config.early_halt_streak, 2);
+        assert!((legacy_config.pos_enc_scale - 0.1).abs() < 1e-6);
+        assert!((legacy_config.pos_base_freq - 0.05).abs() < 1e-6);
+
+        let _ = fs::remove_file(bin_path);
     }
 }

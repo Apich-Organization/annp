@@ -98,6 +98,18 @@ enum Commands {
         /// Override weight decay factor
         #[arg(long)]
         weight_decay: Option<f32>,
+        /// Override negative credit damping factor for subnodes
+        #[arg(long)]
+        negative_credit_damping: Option<f32>,
+        /// Override early halting consecutive negative credit streak threshold
+        #[arg(long)]
+        early_halt_streak: Option<usize>,
+        /// Override positional encoding scale factor
+        #[arg(long)]
+        pos_enc_scale: Option<f32>,
+        /// Override positional encoding base frequency
+        #[arg(long)]
+        pos_base_freq: Option<f32>,
         /// Override completed epoch count
         #[arg(short = 'e', long)]
         epoch: Option<usize>,
@@ -173,6 +185,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_hop,
             initial_energy,
             weight_decay,
+            negative_credit_damping,
+            early_halt_streak,
+            pos_enc_scale,
+            pos_base_freq,
             epoch,
             stage,
             reset_state,
@@ -186,6 +202,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_hop,
             initial_energy,
             weight_decay,
+            negative_credit_damping,
+            early_halt_streak,
+            pos_enc_scale,
+            pos_base_freq,
             epoch,
             stage,
             reset_state,
