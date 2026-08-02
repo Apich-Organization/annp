@@ -128,28 +128,12 @@ pub fn execute_run(
         let target_pos = current_len;
 
         for token_id in 1..32000u32 {
-            // Reconstruct the expected activation tensor vector for this token_id at target_pos
-            let mut expected_vec = Vec::with_capacity(d_model);
-            let mut seed = (token_id as u64)
-                .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(1);
+            let expected_vec = AnnpTokenizer::token_embedding(token_id, target_pos, d_model);
 
-            for d in 0..d_model {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
-                let pos_enc = (target_pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
-                expected_vec.push(rand_f32 + pos_enc);
-            }
-            let rms = (expected_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
-                .sqrt()
-                .max(1e-6);
-
-            // Compute cosine similarity
+            // Compute dot product alignment
             let mut dot = 0.0;
             for d in 0..d_model {
-                dot += last_out[d] * (expected_vec[d] / rms);
+                dot += last_out[d] * expected_vec[d];
             }
             if dot > best_score {
                 best_score = dot;
@@ -164,28 +148,7 @@ pub fn execute_run(
         print!("{} ", new_token_text);
         std::io::stdout().flush().unwrap();
 
-        // Re-encode the newly generated token and append to current_sequence
-        // Since encode_to_tensor expects a full string and we want it to be at target_pos,
-        // we can just use our reconstructed logic to build the tensor directly
-        let mut next_vec = Vec::with_capacity(d_model);
-        let mut seed = (best_id as u64)
-            .wrapping_mul(0x9E3779B97F4A7C15)
-            .wrapping_add(1);
-        for d in 0..d_model {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
-            let pos_enc = (target_pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
-            next_vec.push(rand_f32 + pos_enc);
-        }
-        let rms = (next_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
-            .sqrt()
-            .max(1e-6);
-        for v in next_vec.iter_mut() {
-            *v /= rms;
-        }
-
+        let next_vec = AnnpTokenizer::token_embedding(best_id, target_pos, d_model);
         let next_tensor = Tensor::from_vec(next_vec, (1, d_model), &device)?;
         current_sequence = Tensor::cat(&[&current_sequence, &next_tensor], 0)?;
         next_token_tensor = next_tensor;

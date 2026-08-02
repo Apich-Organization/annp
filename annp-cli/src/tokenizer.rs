@@ -34,6 +34,33 @@ impl AnnpTokenizer {
         self.inner.decode_piece_ids(ids).unwrap_or_default()
     }
 
+    /// Generate deterministic embedding vector for a token at a given sequence position
+    pub fn token_embedding(token_id: u32, pos: usize, d_model: usize) -> Vec<f32> {
+        let mut tok_vec = Vec::with_capacity(d_model);
+        let mut seed = (token_id as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(1);
+
+        for _ in 0..d_model {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
+            tok_vec.push(rand_f32);
+        }
+
+        // RMS Normalization to anchor unit embedding scale (~1.0)
+        let rms = (tok_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
+            .sqrt()
+            .max(1e-6);
+        let mut out = Vec::with_capacity(d_model);
+        for d in 0..d_model {
+            let pos_enc = (pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
+            out.push(tok_vec[d] / rms + pos_enc);
+        }
+        out
+    }
+
     pub fn encode_ids_to_tensor(
         &self,
         ids: &[u32],
@@ -44,28 +71,7 @@ impl AnnpTokenizer {
         let mut flat = Vec::with_capacity(seq_len * d_model);
 
         for (pos, &token_id) in ids.iter().enumerate() {
-            let mut tok_vec = Vec::with_capacity(d_model);
-            let mut seed = (token_id as u64)
-                .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(1);
-
-            for _ in 0..d_model {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                let rand_f32 = ((seed & 0xFFFFFFFF) as f32 / 4294967295.0f32) * 2.0f32 - 1.0f32;
-                tok_vec.push(rand_f32);
-            }
-
-            // RMS Normalization to anchor unit embedding scale (~1.0)
-            let rms = (tok_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
-                .sqrt()
-                .max(1e-6);
-            for d in 0..d_model {
-                // Positional Encoding *after* RMSNorm
-                let pos_enc = (pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
-                flat.push(tok_vec[d] / rms + pos_enc);
-            }
+            flat.extend(Self::token_embedding(token_id, pos, d_model));
         }
 
         Tensor::from_vec(flat, (seq_len, d_model), device)
