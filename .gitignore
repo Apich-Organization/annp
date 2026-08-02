@@ -30,3 +30,8 @@ __pycache__/sentencepiece_model_pb2.cpython-314.pyc
 build_bpe_json.py
 annp-cli/src/test_spm.rs
 scc-report.html
+paper/annp_algorithm.aux
+paper/annp_algorithm.log
+paper/annp_algorithm.out
+paper/annp_algorithm.toc
+paper/annp_algorithm.pdf
