@@ -631,12 +631,11 @@ The selected subnode $j^*$ additionally recovers:
   \Delta h_\text{credit} =
   \begin{cases}
     \bar{\Delta R} & \text{if } \bar{\Delta R} > 0, \\
-    \beta_d \cdot \bar{\Delta R} & \text{if } \bar{\Delta R} \le 0,
+    \lambda_{j^*} \cdot \beta_d \cdot \bar{\Delta R} & \text{if } \bar{\Delta R} \le 0,
   \end{cases}
   \label{eq:credhealth}
 \end{equation}
-where $\bar{\Delta R}$ is the mean batch credit and $\beta_d = \texttt{negative\_credit\_damping}$
-attenuates negative penalties to avoid premature death from transient noise.
+where $\bar{\Delta R}$ is the mean batch credit, $\beta_d = \texttt{negative\_credit\_damping}$ is the damping factor, and $\lambda_{j^*} = 1 - 1/\sqrt{E_{\text{cum}}^{(j^*)}}$ is the subnode's memory maturity. Plastic newborn subnodes ($\lambda_{j^*} \approx 0$) receive zero death penalty on initial weight perturbations, allowing gradient updates to adapt their plastic weights towards positive resonance, while mature subnodes ($\lambda_{j^*} \to 1$) face full accountability.
 
 \begin{remark}[Fixed decay rate vs.\ population-proportional]
   If the decay were $1/(d_\text{head} \cdot |\text{subnodes}|)$, adding more subnodes would

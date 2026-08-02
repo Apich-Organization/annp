@@ -844,9 +844,18 @@ impl MicroBlockNode {
                 // Positive credit: full reward
                 self.subnodes[active].health += mean_credit;
             } else {
-                // Negative credit: gentler penalty to avoid premature death from noise.
-                // Configured via `config.negative_credit_damping` (default: 0.5).
-                self.subnodes[active].health += mean_credit * self.config.negative_credit_damping;
+                // Negative credit: penalty scales with subnode maturity lambda = 1 - 1/sqrt(cumulative_energy).
+                //
+                // Mathematical Rationale:
+                // Newborn subnodes start with cumulative_energy = 0 (lambda = 0, full plasticity).
+                // Their initial weight perturbation epsilon produces minor output deviation, yielding
+                // transient negative credit. Scaling the penalty by lambda protects plastic newborns
+                // (lambda ≈ 0) from instant death on their first activation, allowing gradient updates
+                // to adapt their weights toward positive resonance. As cumulative energy grows and fast
+                // weights harden (lambda → 1), mature subnodes face the full penalty. Zero hardcoded constants.
+                let lambda = 1.0 - 1.0 / self.subnodes[active].cumulative_energy.max(1.0).sqrt();
+                let penalty = mean_credit * self.config.negative_credit_damping * lambda;
+                self.subnodes[active].health += penalty;
             }
         }
 
