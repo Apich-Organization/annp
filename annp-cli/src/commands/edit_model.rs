@@ -125,12 +125,17 @@ pub fn execute_edit_model(
     // 6. State Resets
     if reset_state {
         println!(
-            "  - Resetting transient TD state (last_p_in, last_prediction, last_token_id) for all nodes"
+            "  - Resetting transient TD state (last_p_in, last_prediction, last_token_id) for all nodes and subnodes"
         );
         for node in &mut ckpt.nodes {
             node.last_p_in.clear();
             node.last_prediction.clear();
             node.last_token_id = None;
+            for subnode in &mut node.subnodes {
+                subnode.last_p_in.clear();
+                subnode.last_prediction.clear();
+                subnode.last_token_id = None;
+            }
         }
     }
 
@@ -271,6 +276,9 @@ mod tests {
             node.cumulative_energy = 55.5;
             node.fast_weight = vec![0.5; 16 * 16];
             for subnode in &mut node.subnodes {
+                subnode.last_p_in = vec![1.0; 16];
+                subnode.last_prediction = vec![2.0; 16];
+                subnode.last_token_id = Some(999);
                 subnode.activation_count = 50;
                 subnode.health = 0.42;
                 subnode.credit_stats.observe(1.23);
@@ -314,6 +322,9 @@ mod tests {
             assert_eq!(node.activation_count, 0);
             assert_eq!(node.cumulative_sequence_len, 0);
             for subnode in &node.subnodes {
+                assert!(subnode.last_p_in.is_empty());
+                assert!(subnode.last_prediction.is_empty());
+                assert!(subnode.last_token_id.is_none());
                 assert_eq!(subnode.activation_count, 0);
                 assert_eq!(subnode.credit_stats.count, 0.0);
                 assert!((subnode.health - updated.config.health_base).abs() < 1e-6);

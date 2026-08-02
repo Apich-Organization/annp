@@ -58,20 +58,6 @@ pub struct MicroBlockNode {
     pub cumulative_energy: f32,
 
     // -------------------------------------------------------------------------
-    // TD Learning State (reset per sequence, preserved per checkpoint)
-    // -------------------------------------------------------------------------
-    /// Input particle aggregate from the previous sub-batch call.
-    /// Used as the "prediction" baseline for computing the next TD residual error.
-    pub last_p_in: Vec<f32>, // [d_head]
-    /// Predicted output from the previous sub-batch call.
-    /// TD error = last_prediction - current_p_in (expected next vs. actual next).
-    pub last_prediction: Vec<f32>, // [d_head]
-    /// Token ID from the previous sub-batch call.
-    /// The TD weight is 1/dt where dt = current_token_id - last_token_id.
-    /// If last_token_id is None (sequence start or post-reset), TD is skipped for this step.
-    pub last_token_id: Option<u32>,
-
-    // -------------------------------------------------------------------------
     // Node State Statistics
     // -------------------------------------------------------------------------
     /// Cumulative count of particles processed (in terms of batch_size per sub-batch).
@@ -122,11 +108,6 @@ impl MicroBlockNode {
         }
         let subnodes = vec![primary_subnode];
 
-        // Non-zero fast_weight initialization at Kaiming scale 1/d_head.
-        // Without this, ΔR = p_out^T W p_out - p_in^T W p_in ≡ 0 when W=0,
-        // so no credit signal exists until Hebbian updates accumulate.
-        // Scale 1/d_head ensures the initial quadratic form ||p^T W p|| ~ O(1/d_head),
-        // small enough not to distort early computation.
         let fast_weight_scale = 1.0 / (d_head as f32);
         let fast_weight: Vec<f32> = {
             let mut rng = rand::rng();
@@ -134,7 +115,6 @@ impl MicroBlockNode {
                 .map(|_| rng.random_range(-fast_weight_scale..fast_weight_scale))
                 .collect()
         };
-        let last_p_in = vec![0.0f32; d_head];
 
         let queue_backpressure = config.queue_backpressure;
         let mut node = Self {
@@ -144,9 +124,6 @@ impl MicroBlockNode {
             split_count: 0,
             fast_weight,
             cumulative_energy: 0.0,
-            last_p_in,
-            last_prediction: vec![0.0f32; d_head],
-            last_token_id: None,
             local_loss_accumulator: 0.0,
             local_loss_count: 0,
             cumulative_sequence_len: 0,
@@ -401,6 +378,7 @@ impl MicroBlockNode {
         }
         self.active_subnode = active_idx;
         let active = active_idx;
+        self.subnodes[active].cumulative_energy += batch_energy;
         // Only the winning (active) subnode recovers health, proportional to its own alpha.
         // This couples vitality to the subnode's functional contribution strength.
         let recovery = self.subnodes[active].alpha / (d_head as f32);
@@ -408,7 +386,7 @@ impl MicroBlockNode {
 
         let token_id = particles[0].header.origin_token_id;
 
-        if let Some(last_id) = self.last_token_id
+        if let Some(last_id) = self.subnodes[active].last_token_id
             && token_id > last_id
         {
             let dt = token_id - last_id;
@@ -432,10 +410,12 @@ impl MicroBlockNode {
             //   sequence) are prevented by reset_state() at sequence boundaries.
             let td_weight = 1.0 / dt as f32;
             let mut local_err = vec![0.0f32; d_head];
-            for (err, (pred, p_in)) in local_err
-                .iter_mut()
-                .zip(self.last_prediction.iter().zip(self.p_in_buf.iter()))
-            {
+            for (err, (pred, p_in)) in local_err.iter_mut().zip(
+                self.subnodes[active]
+                    .last_prediction
+                    .iter()
+                    .zip(self.p_in_buf.iter()),
+            ) {
                 *err = (pred - p_in) * td_weight;
             }
 
@@ -475,9 +455,12 @@ impl MicroBlockNode {
                 // between epochs — do not modify node-internal accumulators.
 
                 let mut p_in_normed = vec![0.0f32; d_head];
-                let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
+                let sq_sum_attn: f32 = self.subnodes[active].last_p_in.iter().map(|&x| x * x).sum();
                 let inv_rms_attn = 1.0 / (sq_sum_attn / (d_head as f32) + RMS_EPSILON).sqrt();
-                for (normed, &in_val) in p_in_normed.iter_mut().zip(self.last_p_in.iter()) {
+                for (normed, &in_val) in p_in_normed
+                    .iter_mut()
+                    .zip(self.subnodes[active].last_p_in.iter())
+                {
                     *normed = in_val * inv_rms_attn;
                 }
 
@@ -497,7 +480,7 @@ impl MicroBlockNode {
                 let mut s_mid = vec![0.0f32; d_head];
                 for (s, (&in_val, &attn_val)) in s_mid
                     .iter_mut()
-                    .zip(self.last_p_in.iter().zip(attn_out.iter()))
+                    .zip(subnode.last_p_in.iter().zip(attn_out.iter()))
                 {
                     *s = in_val + alpha * attn_val;
                 }
@@ -599,7 +582,7 @@ impl MicroBlockNode {
                 // cumulative_energy is updated on EVERY sub-batch (line 280), so by the
                 // time the first learning step fires, it's already ≈ batch_energy ≈ 64,
                 // giving lambda ≈ 0.875 from the very first update.
-                let lambda = 1.0 - 1.0 / self.cumulative_energy.max(1.0).sqrt();
+                let lambda = 1.0 - 1.0 / subnode.cumulative_energy.max(1.0).sqrt();
                 for (r, &d_s_mid) in d_s_mid_total.iter().enumerate() {
                     let d_attn_out = d_s_mid * alpha;
                     for (c, &in_val) in p_in_normed.iter().enumerate() {
@@ -636,7 +619,11 @@ impl MicroBlockNode {
         let mut dot = 0.0;
         let mut norm1 = 0.0;
         let mut norm2 = 0.0;
-        for (&in_val, &last_val) in self.p_in_buf.iter().zip(self.last_p_in.iter()) {
+        for (&in_val, &last_val) in self
+            .p_in_buf
+            .iter()
+            .zip(self.subnodes[active].last_p_in.iter())
+        {
             dot += in_val * last_val;
             norm1 += in_val * in_val;
             norm2 += last_val * last_val;
@@ -647,8 +634,6 @@ impl MicroBlockNode {
             0.0
         };
         self.sum_temporal_affinity += affinity * batch_size as f32;
-
-        self.last_p_in.copy_from_slice(&self.p_in_buf);
 
         self.p_out_buf.clear();
         self.p_out_buf.resize(d_head, 0.0f32);
@@ -716,8 +701,13 @@ impl MicroBlockNode {
             }
         }
 
-        self.last_prediction.copy_from_slice(&self.p_out_buf);
-        self.last_token_id = Some(token_id);
+        self.subnodes[active]
+            .last_p_in
+            .copy_from_slice(&self.p_in_buf);
+        self.subnodes[active]
+            .last_prediction
+            .copy_from_slice(&self.p_out_buf);
+        self.subnodes[active].last_token_id = Some(token_id);
 
         let active_alpha = self.subnodes[active].alpha;
         // Energy conservation normalization: scale_factor = 1/sqrt(1 + alpha²)

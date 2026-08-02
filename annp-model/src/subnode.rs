@@ -47,6 +47,31 @@ pub struct Subnode {
     pub health: f32,
     /// Optional GPU weight mirror. None on CPU; populated by `sync_cuda_weights()`.
     pub d_weights: Option<CudaDeviceWeights>,
+    /// Cumulative sum of input particle energies seen specifically by this subnode.
+    /// Drives subnode-level fast_weight memory hardening: lambda = 1 - 1/sqrt(cumulative_energy).
+    ///
+    /// ### Mathematical Rationale:
+    /// Node-level cumulative_energy reflects global container age. However, when a child subnode
+    /// is spawned via neurogenesis, inheriting node-level cumulative_energy would assign it
+    /// rigid memory retention (lambda ≈ 0.999), preventing the newborn subnode from rapidly
+    /// differentiating away from parent weights. Resetting cumulative_energy to 0.0 on spawn
+    /// ensures newborn subnodes start with lambda = 0 (full plasticity), enabling rapid manifold specialization.
+    pub cumulative_energy: f32,
+
+    /// Subnode-level TD prediction baseline from the previous activation of THIS specific subnode.
+    ///
+    /// ### Mathematical Rationale:
+    /// Isolates temporal difference learning to individual functional specialists (subnodes).
+    /// Prevents cross-talk corruption where heterogeneous particle streams visiting the same container
+    /// node overwrite a single shared TD state vector.
+    pub last_p_in: Vec<f32>,
+
+    /// Subnode-level predicted output vector from the previous activation of THIS specific subnode.
+    pub last_prediction: Vec<f32>,
+
+    /// Subnode-level token ID from the previous activation of THIS specific subnode.
+    /// Used to compute token gap dt = current_token_id - subnode.last_token_id and harmonic weight w(dt) = 1/dt.
+    pub last_token_id: Option<u32>,
 }
 
 impl Clone for Subnode {
@@ -61,6 +86,10 @@ impl Clone for Subnode {
             credit_stats: self.credit_stats,
             health: self.health,
             d_weights: None, // Will be initialized by the model
+            cumulative_energy: self.cumulative_energy,
+            last_p_in: self.last_p_in.clone(),
+            last_prediction: self.last_prediction.clone(),
+            last_token_id: self.last_token_id,
         }
     }
 }
@@ -117,6 +146,10 @@ impl Subnode {
             credit_stats: OnlineStats::new(gamma),
             health: 1.0,
             d_weights: None,
+            cumulative_energy: 0.0,
+            last_p_in: vec![0.0f32; d_head],
+            last_prediction: vec![0.0f32; d_head],
+            last_token_id: None,
         }
     }
 
@@ -140,11 +173,11 @@ impl Subnode {
     /// Re-randomizing alpha would require the child to re-discover the correct scale
     /// from scratch, slowing specialization.
     ///
-    /// ## Credit Stats Reset
+    /// ## Plasticity Reset for Newborns
     ///
-    /// `credit_stats` starts fresh (count=0). The child is treated as a new entrant
-    /// in Thompson Sampling: it gets score=INFINITY for its first selection, ensuring
-    /// it is evaluated at least once before competing on observed merits.
+    /// `cumulative_energy` is reset to 0.0 so the child starts fully plastic (lambda = 0),
+    /// allowing rapid specialization away from the parent's weights.
+    /// `credit_stats` starts fresh (count=0) for guaranteed first-visit evaluation.
     pub fn spawn_from_parent(
         subnode_id: usize,
         parent: &Subnode,
@@ -153,10 +186,6 @@ impl Subnode {
         gamma: f32,
     ) -> Self {
         let mut rng = rand::rng();
-        // Data-driven perturbation: ~10% of typical weight magnitude.
-        // Larger than numerical noise (1e-4) but smaller than init scale (scale ≈ 0.055),
-        // so children start near the parent but with enough difference to explore divergent
-        // specializations via subsequent gradient updates.
         let epsilon = 1.0 / (d_head as f32 * ffn_dim as f32).sqrt();
 
         let w_gate = parent
@@ -180,11 +209,15 @@ impl Subnode {
             w_gate,
             w_up,
             w_down,
-            alpha: parent.alpha, // Inherit operating scale; child specializes from same functional level
+            alpha: parent.alpha, // Inherit operating scale
             activation_count: 0,
-            credit_stats: OnlineStats::new(gamma), // Fresh statistics — child earns its own credit history
+            credit_stats: OnlineStats::new(gamma),
             health: 1.0,
             d_weights: None,
+            cumulative_energy: 0.0, // Child starts plastic!
+            last_p_in: vec![0.0f32; d_head],
+            last_prediction: vec![0.0f32; d_head],
+            last_token_id: None,
         }
     }
 }

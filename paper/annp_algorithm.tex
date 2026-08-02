@@ -302,10 +302,19 @@ The routing decision for an arriving particle $\vp$ at node $i$ selects neighbor
   +\, \underbrace{\mu_k + \sigma_k \cdot t_k}_{\text{Thompson sample}},
   \label{eq:routing}
 \end{equation}
-where $\mW_k \in \R^{d_\text{head}}$ is a fixed random projection for neighbor $k$
-(not gradient-updated), $\mu_k$ and $\sigma_k$ are the empirical posterior mean and standard error
-of ΔR credit observations along edge $k$, and $t_k$ is sampled from a Student-$t$ approximation
-with $\nu_k = \max(1, n_k - 1)$ degrees of freedom.
+where $\mW_k \in \R^{d_\text{head}}$ is the content projection vector for neighbor $k$,
+$\mu_k$ and $\sigma_k$ are the empirical posterior mean and standard error of $\Delta R$ credit
+observations along edge $k$, and $t_k$ is sampled from a Student-$t$ approximation with $\nu_k = \max(1, n_k - 1)$ degrees of freedom.
+
+When edge $k$ yields positive credit $\Delta R > 0$ for a transformed particle payload $\vp_\text{out}$,
+the projection vector $\mW_k$ undergoes a Hebbian weight update:
+\begin{equation}
+  \mW_k \leftarrow \clamp\!\left(\mW_k + \eta_r \cdot \Delta R \cdot \hat{\vp}_\text{out},\, -w_\text{max},\, w_\text{max}\right),
+  \qquad \eta_r = \frac{0.01}{d_\text{head}},
+  \label{eq:routing_hebbian}
+\end{equation}
+where $\hat{\vp}_\text{out} = \RMSNorm(\vp_\text{out})$ and $w_\text{max} = 3/\sqrt{d_\text{head}}$.
+This enables $\mW_k$ to dynamically align with the semantic manifold of particles that receive positive credit at neighbor $k$, preventing high-credit nodes from degenerating into semantic-blind traffic hubs.
 
 \begin{designbox}{Content + Credit: Two-Signal Routing}
   Pure content routing ($\vp^\top \mW_k$ alone) ignores whether neighbor $k$ is
@@ -496,14 +505,15 @@ $\Delta R < 0$ indicates the particle was pushed away from familiar patterns.
 \subsubsection{Temporal-Difference Learning}
 \label{sec:td}
 
-Each node maintains a temporal-difference state
-$(\bar{\vp}_\text{last},\, \hat{\vp}_\text{pred},\, \ell_\text{last})$.
-When a sub-batch for token $\ell > \ell_\text{last}$ arrives, the TD error is:
+Each subnode $j$ independently maintains its own temporal-difference state
+$\bigl(\bar{\vp}_\text{last}^{(j)},\, \hat{\vp}_\text{pred}^{(j)},\, \ell_\text{last}^{(j)}\bigr)$.
+When subnode $j$ is active for a sub-batch at token $\ell > \ell_\text{last}^{(j)}$, the TD error is computed against subnode $j$'s own previous activation:
 \begin{equation}
-  \boldsymbol{\delta} = w(dt) \cdot \bigl(\hat{\vp}_\text{pred} - \bar{\vp}_\text{in}^\ell\bigr),
-  \qquad w(dt) = \frac{1}{dt},\quad dt = \ell - \ell_\text{last}.
+  \boldsymbol{\delta}^{(j)} = w(dt) \cdot \bigl(\hat{\vp}_\text{pred}^{(j)} - \bar{\vp}_\text{in}^\ell\bigr),
+  \qquad w(dt) = \frac{1}{dt},\quad dt = \ell - \ell_\text{last}^{(j)}.
   \label{eq:tderror}
 \end{equation}
+By isolating TD prediction states to individual specialized subnodes, temporal-difference signals remain uncorrupted by heterogeneous particle streams visiting the same container node.
 The local loss at step $\ell$ is the mean-squared TD error:
 \begin{equation}
   \mathcal{L}_\ell = \frac{1}{d_\text{head}} \norm{\boldsymbol{\delta}}^2.

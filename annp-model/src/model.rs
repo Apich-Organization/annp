@@ -97,12 +97,13 @@ impl ANNPModel {
 
     pub fn reset_state(&mut self) {
         for node in self.nodes.iter_mut() {
-            node.last_token_id = None;
+            for subnode in node.subnodes.iter_mut() {
+                subnode.last_token_id = None;
+                subnode.last_p_in.iter_mut().for_each(|x| *x = 0.0);
+                subnode.last_prediction.iter_mut().for_each(|x| *x = 0.0);
+            }
             node.p_in_buf.clear();
             node.p_out_buf.clear();
-            // Fast weights are NOT cleared on state reset, as they represent learned memory,
-            // but we might want to decay them or leave them. For now, leave them alone.
-            node.last_p_in.iter_mut().for_each(|x| *x = 0.0);
             node.recent_activation_count = 0;
             node.local_loss_accumulator = 0.0;
             node.local_loss_count = 0;
@@ -247,7 +248,7 @@ impl ANNPModel {
                         }
                         if p.credit_valid {
                             self.topology.routing_tables[node_id]
-                                .observe_credit(next_hop, p.credit);
+                                .observe_credit(next_hop, p.credit, &p.payload);
                         }
                         self.next_queues[next_hop].push(p);
                     }

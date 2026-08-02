@@ -163,7 +163,25 @@ impl RoutingTable {
         self.neighbors[best]
     }
 
-    pub fn observe_credit(&mut self, selected_neighbor: usize, credit: f32) {
+    /// Update routing table with observed credit and perform Hebbian update on positive credit.
+    ///
+    /// ## Hebbian Routing Weight Update Rule:
+    ///
+    ///   W_k = clamp(W_k + eta_r * credit * p_out_normed, -max_w, max_w)
+    ///   eta_r = 0.01 / d_head
+    ///   max_w = 3.0 / sqrt(d_head)
+    ///
+    /// ### Mathematical Rationale:
+    /// Without dynamic updating, content routing weights W_k remain fixed random projections.
+    /// In high-Gini traffic concentration (hub nodes), fixed W_k routes particles blindly based on
+    /// static projection rather than learned transformation quality. Updating W_k along positive
+    /// credit directions (credit > 0) turns edge k into a dynamic semantic filter that aligns
+    /// with the particle manifold that node i successfully processes, preventing hub overload.
+    ///
+    /// ### Learning Rate Scaling (eta_r = 0.01 / d_head):
+    /// Scale 1/d_head matches the dimension normalization of particle payloads (RMS ≈ 1).
+    /// Coefficient 0.01 provides smooth, gradual alignment without overwhelming Thompson credit.
+    pub fn observe_credit(&mut self, selected_neighbor: usize, credit: f32, payload: &[f32]) {
         self.ensure_edge_credit();
         if let Some(index) = self
             .neighbors
@@ -171,6 +189,22 @@ impl RoutingTable {
             .position(|&id| id == selected_neighbor)
         {
             self.edge_credit[index].observe(credit);
+
+            // Path A: Hebbian routing weight update on positive credit
+            if credit > 0.0 && payload.len() == self.d_head {
+                let sq_sum: f32 = payload.iter().map(|&x| x * x).sum();
+                let inv_rms = 1.0 / (sq_sum / (self.d_head as f32) + annp_core::RMS_EPSILON).sqrt();
+                let eta_r = 0.01 / (self.d_head as f32);
+                let num_neighbors = self.neighbors.len();
+                let max_w = (1.0 / (self.d_head as f32)).sqrt() * 3.0;
+
+                for (d, &p_val) in payload.iter().enumerate().take(self.d_head) {
+                    let p_normed = p_val * inv_rms;
+                    let idx = d * num_neighbors + index;
+                    let updated = self.weights[idx] + eta_r * credit * p_normed;
+                    self.weights[idx] = updated.clamp(-max_w, max_w);
+                }
+            }
         }
     }
 
