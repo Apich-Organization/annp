@@ -7,7 +7,15 @@ ffn_expansion = 4
 initial_energy = 1.0
 max_hop = 20
 min_hop = 2
-norm_strategy = "RMSNorm"
+step_safety_margin = 20
+queue_backpressure = 64
+health_base = 1.0
+ingress_ratio = 0.1
+k_neighbors = 4
+negative_credit_damping = 0.5
+early_halt_streak = 2
+pos_enc_scale = 0.1
+pos_base_freq = 0.05
 
 [eviction]
 subnode_max = 8
@@ -15,5 +23,8 @@ subnode_max = 8
 [train]
 epochs = 64
 learning_rate = 0.0002
+weight_decay = 1e-4
+chunk_size = 1048576
+seq_len = 1024
 dataset_path = "stage_1_1-32001.json"
 dataset_format = "json"
