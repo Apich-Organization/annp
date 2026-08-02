@@ -3,40 +3,96 @@ use annp_core::{MicroBlockConfig, Particle, RMS_EPSILON};
 use annp_cuda;
 use rand::Rng;
 
+/// # MicroBlockNode — ANNP's fundamental decentralized compute cell
+///
+/// Each node processes particle streams independently with no global coordination.
+/// A node maintains:
+///
+/// - **fast_weight** `W` (d_head×d_head): A local associative memory that hardens over time.
+///   The hardening rate `lambda = 1 - 1/sqrt(cumulative_energy)` is data-driven, not a hyperparameter.
+///
+/// - **subnodes**: Competing FFN specializations that undergo neurogenesis (split) and
+///   natural selection (pruning) automatically based on credit signals.
+///
+/// - **TD residual state** (`last_p_in`, `last_prediction`, `last_token_id`):
+///   These enable temporal-difference learning — comparing predicted to observed token embedding.
+///   They are reset at sequence boundaries but preserved across checkpoint save/restore.
+///
+/// ## Design Principles
+/// 1. **No global state**: Each node updates only from its own local particle stream.
+/// 2. **Forgetting protection via routing**: High-credit nodes attract more traffic, which
+///    naturally reinforces their learned patterns. No LR dampening needed (see comment at `wd_factor`).
+/// 3. **Energy conservation**: `scale_factor = 1/sqrt(1+alpha²)` ensures |p_out| ≈ |p_in|.
 #[repr(align(128))]
 pub struct MicroBlockNode {
     pub node_id: usize,
     pub config: MicroBlockConfig,
     pub subnodes: Vec<Subnode>,
+    /// Total number of subnode splits (neurogenesis events) that have occurred at this node.
+    /// Used for monitoring; does not directly affect any computation.
     pub split_count: u32,
 
+    // -------------------------------------------------------------------------
     // Local Implicit Memory (Fast Weights)
+    // -------------------------------------------------------------------------
+    /// Fast weight matrix W, shape [d_head, d_head], stored row-major.
+    /// This is a local Hopfield-style associative memory. Its update rule is Hebbian:
+    ///   W_new = lambda * W_old - lr * grad
+    /// where lambda = 1 - 1/sqrt(cumulative_energy) hardens toward 1 as the node matures.
+    ///
+    /// IMPORTANT: Initialized with small random values (scale 1/d_head), NOT zeros.
+    /// If W=0, then credit ΔR = p_out^T W p_out - p_in^T W p_in ≡ 0, meaning no credit
+    /// signal exists until Hebbian updates accumulate — creating a cold-start deadlock.
+    /// The non-zero init breaks this deadlock with O(1/d_head) initial credit magnitude.
     pub fast_weight: Vec<f32>, // Flat [d_head * d_head]
-    /// Cumulative sum of all input energies seen. Used to derive the fast_weight
-    /// decay rate lambda = 1 - 1/sqrt(cumulative_energy). As more data is seen,
-    /// lambda → 1, meaning the fast_weight increasingly retains past associations.
-    /// This is the intended design: fast_weight acts as a long-term local memory.
+    /// Cumulative sum of all input energies (||p_in||²) seen by this node.
+    ///
+    /// Drives the fast_weight memory hardening:  lambda = 1 - 1/sqrt(E_cum)
+    ///   - Early (E_cum small):  lambda ≈ 0  → fast_weight decays aggressively (plastic)
+    ///   - Late  (E_cum large):  lambda → 1  → fast_weight retains past associations (rigid)
+    ///
+    /// Using energy (not token count) as the denominator is intentional:
+    /// energy reflects actual signal strength, while token count grows proportionally to
+    /// routing activity (regardless of input quality). This gives a data-quality-adaptive
+    /// plasticity rate rather than a time-based one.
     pub cumulative_energy: f32,
 
-    // Last activation cache for exact chain-rule backpropagation
-    pub last_p_in: Vec<f32>,       // [d_head]
+    // -------------------------------------------------------------------------
+    // TD Learning State (reset per sequence, preserved per checkpoint)
+    // -------------------------------------------------------------------------
+    /// Input particle aggregate from the previous sub-batch call.
+    /// Used as the "prediction" baseline for computing the next TD residual error.
+    pub last_p_in: Vec<f32>, // [d_head]
+    /// Predicted output from the previous sub-batch call.
+    /// TD error = last_prediction - current_p_in (expected next vs. actual next).
     pub last_prediction: Vec<f32>, // [d_head]
+    /// Token ID from the previous sub-batch call.
+    /// The TD weight is 1/dt where dt = current_token_id - last_token_id.
+    /// If last_token_id is None (sequence start or post-reset), TD is skipped for this step.
     pub last_token_id: Option<u32>,
 
-    // Node state statistics
-    pub cumulative_sequence_len: u64, // S_j for plastic hardening
+    // -------------------------------------------------------------------------
+    // Node State Statistics
+    // -------------------------------------------------------------------------
+    /// Cumulative count of particles processed (in terms of batch_size per sub-batch).
+    /// WARNING: Do NOT use this for LR dampening — it grows ~100x per forward() call,
+    /// making any 1/sqrt(S_j) formula near-zero within the first pass.
+    /// Its primary use is for reporting/debugging and cumulative_energy-based lambda.
+    pub cumulative_sequence_len: u64,
+    /// Number of process_sub_batch() calls this node has received.
     pub activation_count: u64,
     pub local_loss_accumulator: f32,
     pub local_loss_count: usize,
     pub recent_activation_count: u64,
 
-    // Reusable workspace scratch buffers
+    // Reusable workspace scratch buffers (pre-allocated to avoid hot-path allocations)
     pub p_in_buf: Vec<f32>,
     pub p_out_buf: Vec<f32>,
     pub use_cuda: bool,
+    /// Index into `subnodes` of the currently active (Thompson-sampled) subnode.
     pub active_subnode: usize,
 
-    // Research Metrics
+    // Research Metrics (online accumulators, reset by extract_batch_metrics)
     pub sum_hop_count: u64,
     pub halted_particles_count: u64,
     pub sum_squared_energy: f32,
@@ -292,13 +348,40 @@ impl MicroBlockNode {
         let mut best_score = f32::NEG_INFINITY;
         let mut active_idx = 0;
 
-        // Fixed per-node health decay rate: 1/d_head regardless of how many subnodes exist.
-        // This prevents a positive-feedback loop where more subnodes → lower decay → they
-        // survive longer → even more subnodes. Each node earns its place independently.
+        // Health decay: each subnode loses health each sub-batch regardless of selection.
+        //
+        // Rate = 1/d_head (fixed, not proportional to subnode count).
+        // WHY FIXED? If decay ∝ 1/len(subnodes), adding more subnodes would slow each one's
+        // decay, letting weak subnodes survive longer purely by being numerous — a positive
+        // feedback loop that undermines natural selection. Fixed 1/d_head means each subnode
+        // competes on its own merits, independent of population size.
+        //
+        // Recovery (below): only the ACTIVE (Thompson-sampled winner) subnode recovers health
+        // by alpha/d_head per step. Net health change:
+        //   active:   +alpha/d_head - 1/d_head = (alpha-1)/d_head  (positive when alpha>1)
+        //   inactive: -1/d_head per step (always declining)
+        // Subnodes with alpha < 1 must compensate via credit-driven health bonus (see below).
         let decay = 1.0 / (d_head as f32);
         for (i, subnode) in self.subnodes.iter_mut().enumerate() {
             subnode.health -= decay;
 
+            // Subnode selection via Student-t Thompson Sampling:
+            //   score = credit_mean + SE * t_sample(df)
+            //
+            // WHY Thompson Sampling OVER GREEDY ARGMAX?
+            // - Greedy always picks the highest mean → collapses diversity early in training
+            // - UCB (mean + c*SE) requires tuning `c` — a hyperparameter
+            // - Thompson Sampling draws from the posterior: uncertain (new) subnodes get
+            //   high variance → natural exploration. Certain (mature) subnodes have small
+            //   SE → exploitation. No hyperparameter, exploration decays automatically.
+            //
+            // WHY Student-t OVER Normal?
+            // - Student-t is heavy-tailed at small df (early learning), enabling rare but
+            //   informative explorations. As count grows, df grows → converges to Normal.
+            //   This gives strongest exploration exactly when we know the least.
+            //
+            // PRIOR for new subnodes (count ≤ 1): score = INFINITY → guaranteed selection
+            // at least once, ensuring every newborn subnode gets evaluated immediately.
             let score = if subnode.credit_stats.count <= 1.0 {
                 f32::INFINITY
             } else {
@@ -318,6 +401,8 @@ impl MicroBlockNode {
         }
         self.active_subnode = active_idx;
         let active = active_idx;
+        // Only the winning (active) subnode recovers health, proportional to its own alpha.
+        // This couples vitality to the subnode's functional contribution strength.
         let recovery = self.subnodes[active].alpha / (d_head as f32);
         self.subnodes[active].health += recovery;
 
@@ -327,10 +412,24 @@ impl MicroBlockNode {
             && token_id > last_id
         {
             let dt = token_id - last_id;
-            // Harmonic temporal discount: w = 1/dt.
-            // No hyperparameter: inverse-distance is the canonical zero-parameter
-            // decay in 1D (analogous to 1/r² in 3D). dt=1→1.0, dt=2→0.5, dt=k→1/k.
-            // No upper bound needed — contribution becomes negligible at large dt naturally.
+            // Temporal Difference (TD) learning with harmonic decay: w(dt) = 1/dt
+            //
+            // WHY HARMONIC (1/dt) OVER EXPONENTIAL (γ^dt)?
+            //   Exponential decay: w = γ^dt requires choosing γ (a hyperparameter).
+            //   γ=0.99 → effective window ~100 steps; γ=0.9 → ~10 steps.
+            //   The choice of γ is arbitrary and architecture-dependent.
+            //
+            //   Harmonic decay: w = 1/dt requires NO hyperparameter.
+            //   Physical justification: it matches the inverse-distance potential in 1D
+            //   (analogous to 1/r² in 3D). dt=1 → w=1.0 (adjacent tokens, full weight);
+            //   dt=8 → w=0.125 (distant tokens, naturally negligible).
+            //   No explicit truncation needed — large dt contributions vanish naturally.
+            //
+            // WHY ONLY FIRE WHEN token_id > last_id?
+            //   Ensures temporal ordering: only forward predictions are learned.
+            //   Particles from the same token (dt=0) would give infinite weight; they're
+            //   excluded by this guard. Cross-sequence jumps (last_token_id from previous
+            //   sequence) are prevented by reset_state() at sequence boundaries.
             let td_weight = 1.0 / dt as f32;
             let mut local_err = vec![0.0f32; d_head];
             for (err, (pred, p_in)) in local_err
@@ -348,16 +447,32 @@ impl MicroBlockNode {
             if let Some(lr) = learning_rate {
                 let weight_decay = self.config.weight_decay;
                 let wd_factor = 1.0 - lr * weight_decay;
-                // Note on catastrophic forgetting protection in ANNP:
-                // We do NOT use a frequency-based LR decay here. The reasons:
-                //   1. cumulative_sequence_len counts particles (grows ~100x per forward()),
-                //      making any 1/sqrt(S_j) formula freeze weights within the first pass.
-                //   2. Structural protection already exists:
-                //      - Topology routing reinforces high-credit nodes (they attract more
-                //        particles and thus more gradient updates, reinforcing specialization).
-                //      - fast_weight uses lambda = 1-1/sqrt(E_cum) for memory hardening.
-                //   3. weight_decay provides L2 regularization against unbounded drift.
-                // If plasticity control is needed, it should be epoch-gated externally.
+                // === Catastrophic Forgetting Protection in ANNP ===
+                //
+                // We do NOT apply a frequency-based LR decay (e.g., lr/sqrt(S_j)) here.
+                // Reason: cumulative_sequence_len grows by batch_size on every sub-batch call.
+                // With typical batch_size=2 and avg_hops=54, S_j grows ~108 per forward(),
+                // making any 1/sqrt(S_j) formula reduce lr to ~8% after just ONE forward pass.
+                // This would freeze weights almost immediately — the opposite of intended.
+                //
+                // Instead, ANNP relies on three structural mechanisms for forgetting protection:
+                //
+                // 1. ROUTING DYNAMICS: Topology routing reinforces high-credit nodes.
+                //    Nodes that perform well attract more particles → more gradient updates
+                //    → stronger specialization. Their learned patterns are reinforced, not
+                //    overwritten, because they keep receiving the same type of input.
+                //
+                // 2. FAST_WEIGHT LAMBDA: The fast_weight memory hardens via
+                //    lambda = 1-1/sqrt(E_cum), driven by cumulative energy (data quality),
+                //    not token count (routing activity). This correctly hardens associations
+                //    that were learned from high-energy (high-signal) inputs.
+                //
+                // 3. WEIGHT DECAY: L2 regularization (wd_factor = 1 - lr*weight_decay)
+                //    prevents unbounded weight growth and keeps FFN weights near the
+                //    learned manifold, providing implicit stability.
+                //
+                // If epoch-level plasticity control is desired, reduce `lr` externally
+                // between epochs — do not modify node-internal accumulators.
 
                 let mut p_in_normed = vec![0.0f32; d_head];
                 let sq_sum_attn: f32 = self.last_p_in.iter().map(|&x| x * x).sum();
@@ -605,6 +720,19 @@ impl MicroBlockNode {
         self.last_token_id = Some(token_id);
 
         let active_alpha = self.subnodes[active].alpha;
+        // Energy conservation normalization: scale_factor = 1/sqrt(1 + alpha²)
+        //
+        // Without normalization, the residual update:  p_out = p_in + alpha * FFN(p_in)
+        // increases ||p_out||² ≈ (1 + alpha²) * ||p_in||² on average (if FFN ≈ identity).
+        // Over many hops, this leads to exponential energy amplification: ||p_Khops||² → ∞.
+        //
+        // The scale_factor compensates:  p_final = (p_out) * scale_factor
+        // Expected energy: ||p_final||² ≈ (1+alpha²) * ||p_in||² / (1+alpha²) = ||p_in||²
+        // This is the KISS principle applied to residual networks — no separate LayerNorm
+        // is needed to maintain energy stability across hops.
+        //
+        // Note: this is applied to the PARTICLE payload (the propagating signal),
+        // NOT to the node's p_out_buf (which is stored for TD learning purposes).
         let scale_factor = 1.0 / (1.0 + active_alpha * active_alpha).sqrt();
         let mut delta_n = vec![0.0f32; d_head];
         for (delta, (out_val, in_val)) in delta_n
@@ -675,6 +803,22 @@ impl MicroBlockNode {
                 .header
                 .step_hop(self.config.initial_energy, self.config.max_hop);
 
+            // Early halting: if a particle receives negative credit for two consecutive
+            // sub-batches at this node, it spontaneously halts.
+            //
+            // Rationale: ΔR < 0 means the node's transformation is pushing the particle
+            // AWAY from familiar (high-resonance) regions of the fast_weight manifold.
+            // Two consecutive negative credits suggests the particle has exhausted its
+            // benefit from this node and should stop propagating (settle).
+            //
+            // WHY TWO CONSECUTIVE rather than one?
+            // A single negative ΔR could be transient noise (particularly early in training
+            // when fast_weight is not yet well-trained). Two consecutive negatives provides
+            // a stronger evidence threshold without requiring a tunable parameter.
+            //
+            // Note: both previous_credit_valid and credit_valid must be true to ensure
+            // we're comparing meaningful measurements, not initialization artifacts
+            // (credit_valid=false means no context was available; see particle.rs).
             if !p_ref.header.halted
                 && previous_credit_valid
                 && p_ref.credit_valid

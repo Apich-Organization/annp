@@ -1,8 +1,32 @@
 use annp_model::ANNPModel;
 use candle_core::{Result, Tensor};
 
-/// Unified Stage: Global Wave Pre-training & Plasticity Hardening.
-/// Shard-specific exact residual backpropagation.
+/// # Trainer — ANNP Sequential Training Orchestrator
+///
+/// Feeds token embeddings one-at-a-time to the model. This is the central training
+/// loop for ANNP's particle-based learning, distinct from transformer-style batched
+/// forward passes.
+///
+/// ## Why Sequential (Token-by-Token) Not Batched?
+///
+/// ANNP's TD (Temporal Difference) learning depends on `last_token_id` to track which
+/// token preceded the current one. A single batched `forward(seq)` would:
+/// 1. Mix particles from all tokens simultaneously, destroying temporal ordering.
+/// 2. Prevent per-token `delta_t` computation (1/dt harmonic discount).
+/// 3. Make `reset_state()` semantically ambiguous (reset mid-sequence? after?)
+///
+/// Token-by-token feeding preserves the causal chain required for TD residuals.
+///
+/// ## Why `reset_state()` Per Sequence, Not Per Epoch?
+///
+/// `reset_state()` clears ONLY temporal state (`last_p_in`, `last_prediction`,
+/// `last_token_id`). It does NOT clear FFN weights or `fast_weight` — those are
+/// accumulated knowledge that should persist across the entire training run.
+///
+/// Epoch = checkpoint interval in ANNP (NOT data repetition). Resetting state per
+/// epoch would erase cross-batch TD continuity at arbitrary checkpoint boundaries.
+/// Resetting per sequence is the correct boundary: sequence boundaries represent
+/// genuine temporal discontinuities where the particle flow context changes.
 pub struct Trainer {
     pub base_lr: f32,
 }
@@ -24,13 +48,29 @@ impl Trainer {
     ) -> Result<f32> {
         let (full_seq_len, _d_model) = input_embeddings.dims2()?;
 
-        // Reset node KV Caches before each sequence to prevent cross-sequence pollution
+        // Reset temporal state (NOT weights) before each sequence.
+        //
+        // This clears last_p_in, last_prediction, and last_token_id at all nodes,
+        // preventing TD learning from trying to connect the end of one sequence
+        // to the beginning of the next (which would be a false temporal association).
+        //
+        // Crucially, fast_weight and FFN weights are preserved — they represent
+        // accumulated learned associations that should NOT be reset between sequences.
         model.reset_state();
 
         let lr = self.base_lr;
         let mut final_seq_loss = 0.0;
 
-        // Feed tokens sequentially to allow temporal difference learning to emerge from the particle flow
+        // Sequential token-by-token feeding — required for TD learning continuity.
+        //
+        // Each call to model.forward(token_i, i, Some(lr)) allows nodes to:
+        // 1. Compute the TD error: actual(t) - predicted(t) using last_prediction.
+        // 2. Apply Hebbian updates weighted by 1/dt harmonic discount.
+        // 3. Update last_token_id = i for the next iteration's dt computation.
+        //
+        // The offset `i` becomes `origin_token_id` in scattering, ensuring globally
+        // monotone token IDs across the entire training run (preventing false TD
+        // associations when resuming — see checkpoint.rs and scattering.rs).
         for i in 0..full_seq_len {
             let single_token = input_embeddings.narrow(0, i, 1)?;
             let (_, step_loss) = model.forward(&single_token, i, Some(lr))?;

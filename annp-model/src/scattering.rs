@@ -14,8 +14,14 @@ impl TokenScattering {
     pub fn new(num_shards: usize, d_head: usize, ingress_ratio: f32) -> Self {
         let num_nodes = num_shards; // num_nodes == num_shards in the current architecture
         let num_ingress = ((num_nodes as f32 * ingress_ratio).ceil() as usize).max(1);
-        // Uniformly distribute ingress nodes across the full mesh by stepping with stride.
-        // Previously took [0..num_ingress] which clusters all ingress in one topological region.
+        // Uniformly distribute ingress nodes across the full mesh topology by striding.
+        //
+        // WHY NOT [0..num_ingress] (first N nodes)?
+        // Taking the first N nodes clusters all ingress points in one topological region.
+        // With structured hypercube connectivity, neighboring node IDs are also topological
+        // neighbors, so all ingress particles enter a densely-connected local cluster
+        // rather than dispersing across the mesh. Uniform stride ensures particles
+        // enter the mesh at diverse, well-separated positions.
         let step = (num_nodes / num_ingress).max(1);
         let ingress_node_indices: Vec<usize> = (0..num_ingress)
             .map(|i| (i * step).min(num_nodes - 1))
@@ -28,7 +34,14 @@ impl TokenScattering {
         }
     }
 
-    /// Scatter sequence embeddings into particles
+    /// Scatter sequence embeddings into particles.
+    ///
+    /// # Parameters
+    /// - `offset`: Global token position offset. Ensures `origin_token_id` is
+    ///   monotonically increasing across the entire training run — not just within
+    ///   each sequence. Without this, tokens at position 0 in different sequences
+    ///   would share the same `origin_token_id`, corrupting the TD learning dt computation
+    ///   (1/dt would fire when `token_id > last_id`, which could match a different sequence's token).
     pub fn scatter_embeddings(
         &self,
         embeddings: &Tensor, // Shape [seq_len, d_model]

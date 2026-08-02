@@ -2,18 +2,50 @@ use annp_core::OnlineStats;
 use annp_cuda::ffi::CudaDeviceWeights;
 use rand::Rng;
 
+/// # Subnode — Competing FFN specialization within a MicroBlockNode
+///
+/// Each MicroBlockNode hosts 1..=subnode_max Subnodes. They compete via Thompson Sampling
+/// (see `process_sub_batch` in `micro_block.rs`) for the right to process each sub-batch.
+/// The winner earns health recovery; losers decay. When health reaches zero, the subnode
+/// is pruned. When health exceeds the threshold, neurogenesis spawns a new sibling.
+///
+/// ## FFN Architecture
+/// The Subnode implements a gated FFN (SwiGLU-style):
+///   output = W_down @ (swish(W_gate @ x) ⊙ (W_up @ x))
+/// where x = RMSNorm(p_in + alpha * fast_weight_output).
+///
+/// ## Key Design Invariants
+/// - `alpha`: Residual scale. Initialized to 1/sqrt(d_head); inherited by children.
+///   Controls how strongly this subnode modifies the particle vs. passing it through.
+/// - `credit_stats`: Tracks ΔR observations for Thompson Sampling. NOT model weights —
+///   it guides routing/selection but is reset on spawn (children start fresh).
+/// - `health`: Viability score. Increases on selection (by alpha/d_head), decays each
+///   step (by 1/d_head). Net positive only when alpha > 1 AND frequently selected.
 #[derive(Debug)]
 pub struct Subnode {
     pub subnode_id: usize,
-    pub w_gate: Vec<f32>, // [d_head, ffn_dim]
-    pub w_up: Vec<f32>,   // [d_head, ffn_dim]
-    pub w_down: Vec<f32>, // [ffn_dim, d_head]
+    /// Gate projection matrix, shape [d_head, ffn_dim] stored row-major.
+    pub w_gate: Vec<f32>,
+    /// Up projection matrix, shape [d_head, ffn_dim] stored row-major.
+    pub w_up: Vec<f32>,
+    /// Down projection matrix, shape [ffn_dim, d_head] stored row-major.
+    /// Scale initialized to scale/sqrt(d_head) to prevent output variance explosion:
+    ///   Var(output) ≈ ffn_scale² × d_head × (1/d_head) = ffn_scale² (preserved).
+    pub w_down: Vec<f32>,
+    /// Residual connection scale factor. Initialized to 1/sqrt(d_head).
+    /// Children inherit this value from their parent rather than re-randomizing,
+    /// so they start specializing from the same functional scale as the parent.
     pub alpha: f32,
     pub activation_count: u64,
-    /// Empirical local credit; reset on checkpoint restore because it is an
-    /// online decision aid, not model knowledge.
+    /// Online statistics (EMA Welford) over observed ΔR credit values.
+    /// Used exclusively for Thompson Sampling subnode selection — NOT model knowledge.
+    /// `gamma` is set to 1 - 1/(d_head²) so the effective memory window ≈ d_head² steps,
+    /// aligned with the fast_weight matrix size. This prevents credit statistics from
+    /// becoming stale too quickly (γ too small) or forgetting important history (γ too large).
     pub credit_stats: OnlineStats,
-    pub health: f32, // Darwinian cellular health
+    /// Darwinian cellular health. Drives neurogenesis (split when high) and pruning (die when ≤ 0).
+    pub health: f32,
+    /// Optional GPU weight mirror. None on CPU; populated by `sync_cuda_weights()`.
     pub d_weights: Option<CudaDeviceWeights>,
 }
 
@@ -34,6 +66,15 @@ impl Clone for Subnode {
 }
 
 impl Subnode {
+    /// Creates a randomly initialized Subnode using He/Kaiming initialization.
+    ///
+    /// # Parameters
+    /// - `gamma`: EMA decay for `credit_stats`. Should be `1 - 1/(d_head²)` (set by caller
+    ///   in `MicroBlockNode::new`), NOT a fixed constant like 0.99. Rationale:
+    ///   - Effective memory window N ≈ 1/(1-γ) = d_head² (e.g., 4096 for d_head=64)
+    ///   - Aligns the credit statistics window with the fast_weight matrix size (d_head×d_head),
+    ///     so credit history covers a comparable number of patterns as fast_weight can store.
+    ///   - Fixed γ=0.99 would give N≈100, too short to distinguish stable subnode differences.
     pub fn new_random(
         subnode_id: usize,
         d_head: usize,
@@ -42,6 +83,7 @@ impl Subnode {
         gamma: f32,
     ) -> Self {
         let mut rng = rand::rng();
+        // He/Kaiming scale: sqrt(2 / (fan_in + fan_out))
         let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
 
         let w_gate = (0..d_head * ffn_dim)
@@ -51,7 +93,16 @@ impl Subnode {
             .map(|_| rng.random_range(-scale..scale))
             .collect();
 
-        let w_down_scale = scale * (1.0 / (d_head as f64).sqrt() as f32); // Mathematical variance preservation instead of arbitrary 0.05
+        // w_down scale = scale / sqrt(d_head) — extra downstream normalization.
+        //
+        // Why smaller? The FFN output is a sum over ffn_dim terms:
+        //   output[d] = Σ_f (swish(gate_f) * up_f) * w_down[f, d]
+        // Variance of this sum ≈ ffn_dim * scale_gate² * scale_down².
+        // Without the extra 1/sqrt(d_head) factor, output variance grows with ffn_dim.
+        // Dividing w_down scale by sqrt(d_head) keeps Var(output) ≈ 1, preventing
+        // the residual update from dominating p_in at initialization.
+        // This is the standard "output-layer scaling" trick from weight initialization theory.
+        let w_down_scale = scale / (d_head as f64).sqrt() as f32;
         let w_down = (0..ffn_dim * d_head)
             .map(|_| rng.random_range(-w_down_scale..w_down_scale))
             .collect();
@@ -69,7 +120,31 @@ impl Subnode {
         }
     }
 
-    /// Spawns a new subnode by inheriting parent subnode weights with a small orthogonal/mathematical perturbation
+    /// Spawns a new child Subnode from a parent, with a small data-driven perturbation.
+    ///
+    /// ## Perturbation Scale: epsilon = 1/sqrt(d_head * ffn_dim)
+    ///
+    /// WHY NOT FIXED 0.01?
+    /// The parent's weight scale at init ≈ sqrt(2/(d_head+ffn_dim)).
+    /// For d_head=64, ffn_dim=512: scale ≈ 0.055, epsilon ≈ 1/sqrt(32768) ≈ 0.0055.
+    /// This gives perturbation ≈ 10% of initial weight magnitude — a consistent ratio
+    /// regardless of model size. A hardcoded 0.01 would be 18% for large d and 200%
+    /// for small d, causing either under- or over-diversification.
+    ///
+    /// ## Alpha Inheritance
+    ///
+    /// The child inherits `parent.alpha` rather than re-randomizing. Alpha controls
+    /// the residual connection strength (how much this subnode modifies the particle).
+    /// Starting from the parent's operating scale lets the child immediately function
+    /// at a comparable contribution level and specialize from there via gradient updates.
+    /// Re-randomizing alpha would require the child to re-discover the correct scale
+    /// from scratch, slowing specialization.
+    ///
+    /// ## Credit Stats Reset
+    ///
+    /// `credit_stats` starts fresh (count=0). The child is treated as a new entrant
+    /// in Thompson Sampling: it gets score=INFINITY for its first selection, ensuring
+    /// it is evaluated at least once before competing on observed merits.
     pub fn spawn_from_parent(
         subnode_id: usize,
         parent: &Subnode,
@@ -78,7 +153,10 @@ impl Subnode {
         gamma: f32,
     ) -> Self {
         let mut rng = rand::rng();
-        // Base perturbation on standard deviations rather than fixed 0.01
+        // Data-driven perturbation: ~10% of typical weight magnitude.
+        // Larger than numerical noise (1e-4) but smaller than init scale (scale ≈ 0.055),
+        // so children start near the parent but with enough difference to explore divergent
+        // specializations via subsequent gradient updates.
         let epsilon = 1.0 / (d_head as f32 * ffn_dim as f32).sqrt();
 
         let w_gate = parent
@@ -91,8 +169,6 @@ impl Subnode {
             .iter()
             .map(|&w| w + rng.random_range(-epsilon..epsilon))
             .collect();
-        // w_down uses the same data-driven epsilon as w_gate/w_up.
-        // Previously used hardcoded 1e-4 which is ~50x smaller than epsilon for d_head=64,ffn_dim=512.
         let w_down = parent
             .w_down
             .iter()
@@ -104,9 +180,9 @@ impl Subnode {
             w_gate,
             w_up,
             w_down,
-            alpha: parent.alpha,
+            alpha: parent.alpha, // Inherit operating scale; child specializes from same functional level
             activation_count: 0,
-            credit_stats: OnlineStats::new(gamma),
+            credit_stats: OnlineStats::new(gamma), // Fresh statistics — child earns its own credit history
             health: 1.0,
             d_weights: None,
         }

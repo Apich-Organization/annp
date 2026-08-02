@@ -27,7 +27,14 @@ impl ParticleHeader {
         }
     }
 
-    /// Step hop counter and deduct energy delta = initial_energy / max_hop
+    /// Step hop counter and deduct energy: delta_e = initial_energy / max_hop.
+    ///
+    /// WHY LINEAR DECAY NOT EXPONENTIAL?
+    /// Linear decay guarantees energy reaches zero at exactly `max_hop` steps.
+    /// Exponential decay (e.g., energy *= 0.95) requires an arbitrary threshold to
+    /// determine "close enough to zero" — adding an implicit hyperparameter.
+    /// With linear decay, the particle's lifetime is exactly `max_hop` hops, predictable
+    /// and configurable with a single interpretable parameter.
     pub fn step_hop(&mut self, initial_energy: f32, max_hop: u16) {
         self.hop_count += 1;
         let delta_e = initial_energy / (max_hop as f32);
@@ -43,16 +50,24 @@ impl ParticleHeader {
 pub struct Particle {
     pub header: ParticleHeader,
     pub payload: Vec<f32>,
-    /// Continuous temporal trace mimicking chemical concentration gradients,
-    /// replacing discrete synchronous wave_ids. Used for STDP-like binding.
+    /// Continuous temporal trace, initialized to 1.0.
+    ///
+    /// Reserved for future STDP-style temporal binding (analogous to chemical
+    /// concentration gradients in biological neural systems). Not used in the
+    /// current main training/inference flow; present as a forward-compatibility field.
     #[serde(default)]
     pub trace_concentration: f32,
     /// Local contrastive improvement written by the node that last processed
     /// this particle. It is the sole routing-learning signal.
     #[serde(default)]
     pub credit: f32,
-    /// `false` means this node had no comparable local context. Absence of a
-    /// measurement must never be interpreted as zero or negative evidence.
+    /// Whether `credit` contains a valid measurement from this hop.
+    ///
+    /// IMPORTANT: `credit = 0.0` is a VALID observation (transformation had no net
+    /// effect on fast_weight resonance). `credit_valid = false` strictly means
+    /// "no local context was available" — the router skips `edge_credit` updates
+    /// for this edge to avoid poisoning statistics with non-measurements.
+    /// Never interpret credit_valid=false as evidence of zero or negative credit.
     #[serde(default)]
     pub credit_valid: bool,
 }

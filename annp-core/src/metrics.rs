@@ -15,6 +15,10 @@ pub struct OnlineStats {
     pub mean: f32,
     /// Exponential-decay M2 accumulator. variance() = m2/count.
     pub m2: f32,
+    /// EMA decay coefficient. Should be set to `1 - 1/d_head²` (not a fixed 0.99).
+    /// Effective window N ≈ 1/(1-gamma) = d_head² (e.g., 4096 for d_head=64),
+    /// aligned with the fast_weight matrix size so credit statistics cover a
+    /// comparable number of patterns as the associative memory can store.
     pub gamma: f32,
 }
 
@@ -45,9 +49,15 @@ impl OnlineStats {
     ///   M2_t    = gamma * M2_{t-1} + (x - mean_{t-1}) * (x - mean_t)
     ///   var_t   = M2_t / count_t
     ///
-    /// The 1/count_t lr starts at 1.0 (first observation) and decays toward
-    /// 1-gamma = 0.01. This enables Thompson Sampling to rapidly evaluate
-    /// newly spawned subnodes without 100-step warm-up.
+    /// WHY NOT standard EMA (`mean = gamma*mean + (1-gamma)*x`)?
+    /// Standard EMA has a fixed learning rate of (1-gamma) regardless of how many
+    /// observations have been seen. For Thompson Sampling, a newly spawned subnode
+    /// needs to set its mean accurately on the FIRST observation (count=1 ⇒ alpha=1.0)
+    /// so that its SE is immediately meaningful. With fixed alpha=(1-gamma)=0.01, a
+    /// new subnode requires 100+ steps to build a reliable mean estimate, making early
+    /// Thompson Sampling effectively random.
+    /// The Welford decay variant starts at alpha=1.0 and decays to (1-gamma) over time:
+    /// rapid acquisition early, stable tracking in steady state. No extra hyperparameter.
     pub fn observe(&mut self, value: f32) {
         if !value.is_finite() {
             return;
@@ -59,6 +69,13 @@ impl OnlineStats {
     }
 
     /// Variance estimate: M2 / count.
+    ///
+    /// WHY `m2/count` NOT `m2/(count-1)` (Bessel's correction)?
+    /// `count` here is a floating-point virtual sample count (decayed Welford),
+    /// not an integer. Bessel's correction applies only to integer-count unbiased
+    /// estimators. With the EMA-decay formulation, the denominator `count` already
+    /// accounts for the effective number of samples — dividing by `count-1` would
+    /// systematically overestimate variance, especially at small effective counts.
     pub fn variance(&self) -> f32 {
         if self.count > 0.0 {
             (self.m2 / self.count).max(0.0)
@@ -84,7 +101,16 @@ impl OnlineStats {
 }
 
 /// Approximate sampling from a Student-t distribution with `df` degrees of freedom
-/// using 1st order Cornish-Fisher expansion.
+/// using 1st-order Cornish-Fisher expansion.
+///
+/// WHY CORNISH-FISHER NOT A PROPER SAMPLER?
+/// - No external crate dependency required (keeps annp-core minimal).
+/// - The key property needed is heavy tails at small `df` (early exploration phase)
+///   and convergence to Normal at large `df` (exploitation phase). The Cornish-Fisher
+///   1st-order term `z * (1 + (z²+1)/(4*df))` captures exactly this behavior.
+/// - Full inversion sampling (e.g., via the incomplete beta function) would be
+///   accurate but unnecessary: Thompson Sampling only needs samples that are
+///   statistically heavier-tailed than Normal, not exact quantiles.
 pub fn student_t_sample_approximation(df: f32, u1: f32, u2: f32) -> f32 {
     let u1 = u1.max(f32::MIN_POSITIVE);
     let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();

@@ -134,20 +134,38 @@ impl CudaMicroBlockRunner {
                 for b in start_b..end_b {
                     let curr_p = &p_in[b * d_head..(b + 1) * d_head];
 
-                    // 1. Fast Weight Matrix Multiply
-                    let mut attn_out = vec![0.0f32; d_head];
+                    // === CPU fallback forward pass ===
+                    // Must match micro_block.rs (inference path) and fused_micro_block_kernel exactly.
+                    //
+                    // Correct sequence:
+                    //   1. p_in_normed  = RMSNorm(p_in)
+                    //   2. attn_out     = fast_weight @ p_in_normed
+                    //   3. s_mid        = p_in + alpha * attn_out        [raw residual, NO separate norm]
+                    //   4. s_mid_normed = RMSNorm(s_mid)                 [norm the accumulated state]
+                    //   5. gate_j, up_j = w_gate, w_up @ s_mid_normed
+                    //   6. h_j          = swish(gate_j) * up_j  (SwiGLU)
+                    //   7. ffn_raw      = w_down @ h
+                    //   8. p_out        = s_mid + alpha * ffn_raw         [raw residual, NO separate norm]
+                    //
+                    // PREVIOUS BUG (fixed here):
+                    //   Old code incorrectly applied RMSNorm to attn_out *before* the residual add:
+                    //     s_mid = p_in + alpha * (attn_out / RMS(attn_out))   ← WRONG
+                    //   and to ffn_raw before the second residual:
+                    //     p_out = s_mid + alpha * (ffn_raw / RMS(ffn_raw))    ← WRONG
+                    //   This is a completely different formula: it normalizes the *delta* rather than
+                    //   the *accumulated state*, producing different outputs from both the CUDA kernel
+                    //   and the canonical micro_block.rs path.
 
-                    let mut sq_sum_in = 0.0f32;
-                    for &val in curr_p.iter() {
-                        sq_sum_in += val * val;
-                    }
+                    // Step 1: RMSNorm(p_in)
+                    let sq_sum_in: f32 = curr_p.iter().map(|&v| v * v).sum();
                     let inv_rms_in = 1.0 / (sq_sum_in / (d_head as f32) + 1e-8).sqrt();
-
                     let mut p_in_normed = vec![0.0f32; d_head];
                     for d in 0..d_head {
                         p_in_normed[d] = curr_p[d] * inv_rms_in;
                     }
 
+                    // Step 2: fast_weight @ p_in_normed
+                    let mut attn_out = vec![0.0f32; d_head];
                     for r in 0..d_head {
                         let mut sum = 0.0f32;
                         for c in 0..d_head {
@@ -156,74 +174,50 @@ impl CudaMicroBlockRunner {
                         attn_out[r] = sum;
                     }
 
-                    // 2. MicroRMSNorm 1 + Residual
+                    // Step 3: s_mid = p_in + alpha * attn_out  (raw, no separate normalization)
                     let mut s_mid = vec![0.0f32; d_head];
-                    if norm_strategy == 0 {
-                        let sq: f32 = attn_out.iter().map(|x| x * x).sum();
-                        let rms = (sq / (d_head as f32) + 1e-8).sqrt();
-                        for d in 0..d_head {
-                            s_mid[d] = curr_p[d] + alpha * (attn_out[d] / rms);
-                        }
-                    } else {
-                        let mut sq = 0.0f32;
-                        for d in 0..d_head {
-                            let val = curr_p[d] + attn_out[d];
-                            s_mid[d] = val;
-                            sq += val * val;
-                        }
-                        let norm = (sq + 1e-8).sqrt();
-                        let s_val = sphere_radius / norm;
-                        for d in 0..d_head {
-                            s_mid[d] *= s_val;
-                        }
+                    for d in 0..d_head {
+                        s_mid[d] = curr_p[d] + alpha * attn_out[d];
                     }
 
-                    // 3. SwiGLU FFN
+                    // Step 4: RMSNorm(s_mid) → s_mid_normed (norm the accumulated state for FFN input)
+                    let sq_sum_mid: f32 = s_mid.iter().map(|&v| v * v).sum();
+                    let inv_rms_mid = 1.0 / (sq_sum_mid / (d_head as f32) + 1e-8).sqrt();
+                    let mut s_mid_normed = vec![0.0f32; d_head];
+                    for d in 0..d_head {
+                        s_mid_normed[d] = s_mid[d] * inv_rms_mid;
+                    }
+
+                    // Steps 5–6: SwiGLU FFN on normalized s_mid
                     let mut ffn_inter = vec![0.0f32; ffn_dim];
                     for j in 0..ffn_dim {
                         let mut gate = 0.0f32;
                         let mut up = 0.0f32;
                         for d in 0..d_head {
-                            gate += s_mid[d] * w_gate[d * ffn_dim + j];
-                            up += s_mid[d] * w_up[d * ffn_dim + j];
+                            gate += s_mid_normed[d] * w_gate[d * ffn_dim + j];
+                            up += s_mid_normed[d] * w_up[d * ffn_dim + j];
                         }
-                        let swish = gate / (1.0 + (-gate).exp());
+                        let swish = gate / (1.0 + (-gate).exp()); // swish = gate * sigmoid(gate)
                         ffn_inter[j] = swish * up;
                     }
 
-                    // 4. Down projection & MicroRMSNorm 2
+                    // Step 7: Down projection
                     let mut ffn_raw = vec![0.0f32; d_head];
                     for d in 0..d_head {
-                        let mut ffn_out_d = 0.0f32;
+                        let mut acc = 0.0f32;
                         for j in 0..ffn_dim {
-                            ffn_out_d += ffn_inter[j] * w_down[j * d_head + d];
+                            acc += ffn_inter[j] * w_down[j * d_head + d];
                         }
-                        ffn_raw[d] = ffn_out_d;
+                        ffn_raw[d] = acc;
                     }
 
+                    // Step 8: p_out = s_mid + alpha * ffn_raw  (raw, no separate normalization)
+                    // Clip matches CUDA kernel numerical guard.
                     let offset = b * d_head;
-                    if norm_strategy == 0 {
-                        let ffn_sq: f32 = ffn_raw.iter().map(|x| x * x).sum();
-                        let ffn_rms = (ffn_sq / (d_head as f32) + 1e-8).sqrt();
-                        for d in 0..d_head {
-                            let val = s_mid[d] + alpha * (ffn_raw[d] / ffn_rms);
-                            unsafe {
-                                *out_ptr.add(offset + d) = val.clamp(-100.0, 100.0);
-                            }
-                        }
-                    } else {
-                        let mut sq = 0.0f32;
-                        for d in 0..d_head {
-                            let val = s_mid[d] + ffn_raw[d];
-                            sq += val * val;
-                        }
-                        let norm = (sq + 1e-8).sqrt();
-                        let s_val = sphere_radius / norm;
-                        for d in 0..d_head {
-                            let val = (s_mid[d] + ffn_raw[d]) * s_val;
-                            unsafe {
-                                *out_ptr.add(offset + d) = val;
-                            }
+                    for d in 0..d_head {
+                        let val = s_mid[d] + alpha * ffn_raw[d];
+                        unsafe {
+                            *out_ptr.add(offset + d) = val.clamp(-100.0, 100.0);
                         }
                     }
                 }

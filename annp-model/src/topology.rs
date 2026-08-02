@@ -2,13 +2,46 @@ use annp_core::{OnlineStats, Particle};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-/// Q-Routing table maintained locally at each Micro-Block Node.
-/// Size: [d_head, num_neighbors]
+/// # RoutingTable — Local Q-Routing table for P2P particle forwarding
+///
+/// Each MicroBlockNode maintains its own RoutingTable. Routing is decentralized:
+/// no node knows about other nodes' routing tables; each routes based solely on
+/// local content affinity and its own empirical credit observations.
+///
+/// ## Routing Decision: `dot + Thompson_Sample(credit)`
+///
+/// Score for each neighbor k:
+///   score_k = dot(p, W_k) + credit_mean_k + SE_k * t_sample(df_k)
+///
+/// **WHY NOT pure `softmax(dot(p, W))`?**
+/// - `dot(p, W_k)` measures content affinity: "does this particle's embedding look
+///   like what neighbor k typically processes?" It captures STRUCTURE routing.
+/// - `credit_mean + SE * t_sample` is Thompson Sampling over PERFORMANCE routing:
+///   it reflects whether particles that went to k recently came back with positive ΔR.
+/// - Combining both prevents two failure modes:
+///   1. Pure content routing ignores whether a neighbor is actually useful (low credit).
+///   2. Pure credit routing ignores whether the particle's content is appropriate for k.
+///
+/// **WHY Thompson Sampling NOT UCB?**
+/// - UCB: score = mean + c * SE requires tuning `c` (exploration coefficient).
+/// - Thompson Sampling: sample from the posterior; uncertainty drives exploration
+///   automatically. No hyperparameter, and exploration self-regulates as credit
+///   statistics accumulate.
+///
+/// ## Weight Matrix
+/// `weights` [d_head, num_neighbors]: learned content affinity vectors per neighbor.
+/// Initialized from U(-scale, scale) where scale = 1/sqrt(d_head).
+/// Updated implicitly via credit feedback through `observe_credit`.
+/// (Note: weights are NOT gradient-updated; they remain as random content projections.
+///  All learning happens through the `edge_credit` EMA statistics.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingTable {
     pub d_head: usize,
     pub neighbors: Vec<usize>,
-    pub weights: Vec<f32>, // Flat [d_head * num_neighbors]
+    /// Content affinity matrix, shape [d_head, num_neighbors], row-major.
+    pub weights: Vec<f32>,
+    /// Per-edge credit statistics (OnlineStats EMA Welford) for Thompson Sampling.
+    /// Populated lazily (empty until first observation).
     #[serde(default)]
     pub edge_credit: Vec<OnlineStats>,
 }
@@ -62,9 +95,18 @@ impl RoutingTable {
         }
     }
 
-    /// Select from local content affinity and empirically observed local credit.
-    /// Both are normalized only across this node's own neighbors; no broadcast,
-    /// global scale, or manually weighted score is involved.
+    /// Select next hop using content affinity + Thompson Sampling over edge credit.
+    ///
+    /// Score for neighbor k:
+    ///   score_k = dot(p.payload, W_k) + credit_thompson_sample_k
+    ///
+    /// New edges (count ≤ 1) use `prior_mean` as their credit estimate.
+    /// WHY PRIOR_MEAN NOT ZERO?
+    /// - Zero initialization is pessimistic: a new edge would always score below
+    ///   established edges with positive mean credit, and would rarely be explored.
+    /// - `prior_mean` = average of all known edges' means — an optimistic/neutral
+    ///   starting point that gives new edges a fair chance of selection on first few
+    ///   visits. This is the multi-armed bandit "optimistic initialization" principle.
     pub fn select_next_hop(&self, particle: &Particle) -> usize {
         let num_neighbors = self.neighbors.len();
         if num_neighbors == 0 {
@@ -77,6 +119,8 @@ impl RoutingTable {
         let mut best = 0;
         let mut best_score = f32::NEG_INFINITY;
 
+        // Compute prior mean over edges with enough data (count > 1).
+        // Used as credit estimate for unvisited edges instead of 0.
         let valid_stats: Vec<_> = self.edge_credit.iter().filter(|s| s.count > 1.0).collect();
         let prior_mean = if valid_stats.is_empty() {
             0.0
@@ -92,6 +136,8 @@ impl RoutingTable {
 
             let score = if let Some(stats) = self.edge_credit.get(k) {
                 if stats.count <= 1.0 {
+                    // New edge: use prior_mean as neutral credit estimate.
+                    // Gets a fair first-visit score, not pessimistically zero.
                     dot + prior_mean
                 } else {
                     let mean = stats.mean;
@@ -100,6 +146,9 @@ impl RoutingTable {
                     let u1: f32 = rand::random::<f32>();
                     let u2: f32 = rand::random::<f32>();
                     let t_sample = annp_core::student_t_sample_approximation(df, u1, u2);
+                    // Thompson Sample: draw from t-distribution around empirical mean.
+                    // Heavy tails at low df (early learning) enable rare explorations;
+                    // converges to Normal as df grows (exploitation dominates).
                     dot + mean + se * t_sample
                 }
             } else {
@@ -125,20 +174,34 @@ impl RoutingTable {
         }
     }
 
-    /// Prune only statistically dominated links, never by a user supplied
-    /// magnitude threshold.
+    /// Prune statistically dominated routing links using 2σ confidence intervals.
+    ///
+    /// A link is dominated if its 95% CI upper bound is below the best link's lower bound:
+    ///   upper_k = mean_k + 2*SE_k  <  best_lower = max_j(mean_j - 2*SE_j)
+    ///
+    /// WHY 2σ CONFIDENCE INTERVALS NOT DIRECT MEAN COMPARISON?
+    /// - Direct comparison (mean_k < best_mean) prunes links that appear worse just
+    ///   due to noise, even if their true performance is comparable.
+    /// - 2σ CI requires statistical significance: we only prune when 95% confident
+    ///   the link is truly inferior, not just transiently below average.
+    /// - Links with few observations (high SE) get wide CIs → never pruned early.
+    ///   This gives new and infrequently visited links sufficient exploration time.
+    ///
+    /// We always keep at least 1 link (even if all have negative credit), because
+    /// a node without routing options cannot forward particles at all.
     pub fn prune_dominated_links(&mut self) -> usize {
         self.ensure_edge_credit();
         if self.neighbors.len() <= 1 {
             return 0;
         }
         let n = self.neighbors.len();
+        // Best lower CI bound: the strongest evidence a link is good.
         let best_lower = self
             .edge_credit
             .iter()
             .map(|stats| {
                 if stats.count <= 1.0 {
-                    f32::NEG_INFINITY
+                    f32::NEG_INFINITY // Insufficient data: don't use as reference
                 } else {
                     stats.mean - stats.standard_error() * 2.0
                 }
@@ -150,11 +213,11 @@ impl RoutingTable {
             .enumerate()
             .filter_map(|(k, stats)| {
                 let upper = if stats.count <= 1.0 {
-                    f32::INFINITY
+                    f32::INFINITY // Insufficient data: always keep (unexplored)
                 } else {
                     stats.mean + stats.standard_error() * 2.0
                 };
-                (upper >= best_lower).then_some(k)
+                (upper >= best_lower).then_some(k) // Keep if not statistically dominated
             })
             .collect();
         if keep.len() == n {
@@ -177,6 +240,19 @@ impl RoutingTable {
 }
 
 /// System P2P Topology Grid managing node connectivity and routing tables.
+///
+/// The grid uses a structured hypercube-like connectivity pattern to balance:
+/// - **Short path length**: O(log N) hops between any two nodes.
+/// - **Topological diversity**: Multiple structurally distinct paths between any pair.
+///
+/// ## Why NOT simple ring (+1, +2, ...) connectivity?
+/// Ring topology creates a 1D linear flow: particles travel along a single "highway".
+/// At N=100 nodes, the diameter is 50 hops (half the ring), even with k=8 neighbors.
+///
+/// The structured step pattern (base_offset = sqrt(N), varying multipliers) creates
+/// connections to nodes at distances sqrt(N), 2*sqrt(N), 3*sqrt(N), ... (mod N),
+/// analogous to a hypercube's dimension-based connectivity. This reduces diameter to
+/// O(sqrt(N)) steps with the same number of neighbors, enabling richer particle flow.
 pub struct TopologyGrid {
     pub num_nodes: usize,
     pub routing_tables: Vec<RoutingTable>,
@@ -189,8 +265,16 @@ impl TopologyGrid {
         for i in 0..num_nodes {
             let mut neighbors = Vec::with_capacity(neighbors_per_node);
 
-            // Dynamic structured mesh generation without hardcoded offsets like '7'
-            // Creates a hypercube-like local connection pattern based on prime increments
+            // Structured mesh generation: connect node i to nodes at positions
+            //   (i + base_offset * k) mod num_nodes  for k = 1, 2, 3, ...
+            // where base_offset = ceil(sqrt(num_nodes)).
+            //
+            // WHY NOT simple ring (+1, +2)?
+            // Ring topology creates a 1D linear flow. Particles must traverse O(N/2) hops
+            // to reach far nodes even with k neighbors. The sqrt(N)-based step creates
+            // a hypercube-like structure: diameter reduces to O(sqrt(N)) and the graph
+            // becomes well-connected, enabling rich multi-path particle flow.
+            // This is analogous to how a 2D grid has sqrt(N) diameter vs. O(N) for a ring.
             let base_offset = (num_nodes as f32).sqrt().ceil() as usize;
             let mut step_mult = 1;
             while neighbors.len() < neighbors_per_node && step_mult < num_nodes {

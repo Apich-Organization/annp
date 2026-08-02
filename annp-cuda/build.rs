@@ -148,7 +148,6 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(cuda_available)");
     println!("cargo:rerun-if-changed=cuda/common.cuh");
     println!("cargo:rerun-if-changed=cuda/micro_block_fused.cu");
-    println!("cargo:rerun-if-changed=cuda/particle_router.cu");
     println!("cargo:rustc-link-lib=stdc++");
 
     let nvcc_path_opt = find_nvcc();
@@ -160,7 +159,7 @@ fn main() {
         let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
         let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
-        let cu_files = vec!["cuda/micro_block_fused.cu", "cuda/particle_router.cu"];
+        let cu_files = vec!["cuda/micro_block_fused.cu"];
 
         let msvc_tool = if target_env == "msvc" {
             let target =

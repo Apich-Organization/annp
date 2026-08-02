@@ -132,12 +132,25 @@ pub fn execute_train(
 
     let (mut stream, total_batches) =
         DatasetStream::new(dataset_path, dataset_fmt, d_model, &device)?;
-    // In ANNP's continual-learning design, "epoch" is a checkpoint-interval,
-    // NOT a full data repetition. The entire dataset is traversed exactly once
-    // across all epochs. train_epochs controls how many checkpoints are saved
-    // and how fine-grained the epoch-summary reporting is.
-    // Repeating the same data multiple times would corrupt the temporal ordering
-    // tracked by last_token_id and cause fast_weight overfitting.
+    // ANNP Epoch Semantics — CRITICAL: this differs from standard ML frameworks.
+    //
+    // In PyTorch/Transformers: epoch = one full pass over the dataset.
+    //   epochs=10 means the SAME data is trained on 10 times.
+    //
+    // In ANNP: epoch = one checkpoint interval. The total dataset is traversed ONCE
+    //   across all epochs. `epochs=10` divides the data into 10 segments, saving a
+    //   checkpoint after each segment. The data volume is fixed; nothing repeats.
+    //
+    // WHY NO DATA REPETITION?
+    //   1. `last_token_id` tracks global token positions for TD learning (dt = t_cur - t_prev).
+    //      Repeating the dataset restarts token IDs, creating false temporal continuity:
+    //      the model "sees" token 0 again after token T, but dt=T, not dt=1.
+    //      This poisons harmonic discount weights (1/dt becomes vanishingly small).
+    //   2. `fast_weight` learns via Hebbian association. Repeating data causes overfitting
+    //      to the training distribution: the same pattern-association is reinforced without
+    //      any new information, eventually dominating the associative memory.
+    //   3. ANNP is designed as a continual learning system: it learns from a stream,
+    //      not by replaying a fixed buffer. Multiple passes contradict this design.
     let batches_per_epoch = (total_batches / train_epochs).max(1);
 
     logger.log(
@@ -149,6 +162,12 @@ pub fn execute_train(
     );
 
     if is_resumed && epoch_start_val > 0 {
+        // Resume data cursor: skip exactly the batches already processed.
+        //
+        // skip_batches = epoch_start * batches_per_epoch ensures the stream
+        // advances to the exact point where training was interrupted. After
+        // skipping, the stream yields only unseen data — consistent with
+        // ANNP's single-pass continual learning design.
         let skip_batches = epoch_start_val * batches_per_epoch;
         logger.log(
             "RESUME",

@@ -6,8 +6,16 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const ANNPB_MAGIC: &[u8; 4] = b"ANNP";
+// ANNPB versioning strategy: forward-compatible. Older checkpoints can be loaded by
+// newer code. Every time a new persisted field is added, this version MUST be incremented.
 const ANNPB_VERSION: u32 = 9;
 
+/// Per-subnode checkpoint data.
+///
+/// `credit_stats` is saved and restored (NOT reset on checkpoint load).
+/// It is the statistical foundation for Thompson Sampling: after resume,
+/// subnode competition resumes immediately with meaningful credit histories
+/// rather than all subnodes starting equal from count=0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubnodeCheckpoint {
     pub subnode_id: usize,
@@ -20,6 +28,15 @@ pub struct SubnodeCheckpoint {
     pub health: f32,
 }
 
+/// Per-node checkpoint data.
+///
+/// `last_p_in`, `last_prediction`, and `last_token_id` are saved to preserve
+/// TD learning state across checkpoints. Without these, the first sequence after
+/// resume would have no valid `last_token_id`, skipping one TD update step.
+///
+/// These fields are the inter-sequence "cold state": they are cleared by
+/// `reset_state()` at sequence boundaries during training, but the checkpoint
+/// captures them between sequences so resume starts from a valid TD context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeCheckpoint {
     pub node_id: usize,
@@ -44,7 +61,8 @@ pub struct ModelCheckpoint {
 }
 
 impl ModelCheckpoint {
-    /// Save checkpoint to file (.annpb binary format if extension is .annpb or default, otherwise JSON)
+    /// Save checkpoint to file.
+    /// Uses `.annpb` binary format if the extension is `.annpb`, otherwise JSON.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
         let p = path.as_ref();
         if let Some(parent) = p.parent() {
@@ -62,7 +80,8 @@ impl ModelCheckpoint {
         Ok(())
     }
 
-    /// Load checkpoint from file (auto-detects .annpb binary format by magic header or extension)
+    /// Load checkpoint from file.
+    /// Auto-detects `.annpb` binary format by magic header or file extension; falls back to JSON.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let p = path.as_ref();
         let mut file = File::open(p)?;
@@ -509,6 +528,7 @@ impl ModelCheckpoint {
         })
     }
 
+    /// Restore checkpoint state into a live model instance.
     pub fn apply_to_model(&self, model: &mut ANNPModel) {
         model.config = self.config.clone();
 
