@@ -20,7 +20,7 @@ pub fn init_dtact_runtime() {
                 dtact::dta_scheduler::TopologyMode::P2PMesh,
             );
             let pool = dtact::memory_management::ContextPool::new(
-                512,
+                1024,
                 524_288,
                 dtact::memory_management::SafetyLevel::Safety0,
                 0,

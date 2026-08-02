@@ -29,3 +29,4 @@ rewrite_cuda2.py
 __pycache__/sentencepiece_model_pb2.cpython-314.pyc
 build_bpe_json.py
 annp-cli/src/test_spm.rs
+scc-report.html
