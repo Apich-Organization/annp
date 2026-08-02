@@ -664,18 +664,20 @@ $s \approx \sqrt{2/(d+d_\text{ffn})}$, providing sufficient diversity for diverg
 specialization while preserving the parent's learned functional scale.
 The parent's health is halved upon spawning ($h_{j^*} \leftarrow h_{j^*}/2$),
 modeling the energetic cost of cell division.
-The newborn is initialized with an embryonic health reserve:
-\begin{equation}
-  h_\text{child,init} = d_\text{head} \cdot h_\text{base},
-  \label{eq:child_health_init}
-\end{equation}
-which is dimensionally paired with the passive decay rate $1/d_\text{head}$ per batch, giving a
-runway of $d_\text{head}^2 \cdot h_\text{base}$ batches.
-This interval is commensurate with filling the $d_\text{head} \times d_\text{head}$ associative
-memory once \textemdash{} sufficient for gradient updates to differentiate the child's plastic
-weights before it enters fair Thompson Sampling competition.
-No new hyperparameters are introduced; $d_\text{head}$ and $h_\text{base}$ are pre-existing
-structural parameters.
+The child is initialized with $h_\text{child,init} = h_\text{base}$, which is
+intentionally below the 2-subnode neurogenesis threshold $h_\text{base}(1 + 2) = 3\,h_\text{base}$.
+This structural inequality, $h_\text{base} < 3\,h_\text{base}$, prevents \emph{cascade neurogenesis}:
+a child inheriting the parent's positive credit prior via Bayesian Thompson Sampling
+would otherwise immediately trigger a further split upon first selection, proliferating untrained
+subnodes to $K_\text{max}$ within a handful of batches.
+An additional \emph{maturity guard} reinforces this:
+neurogenesis requires $E_\text{cum,active} > 0$ (the candidate subnode must have processed
+at least one input sub-batch). A freshly spawned child with $E_\text{cum} = 0$ cannot reproduce
+regardless of its inherited credit statistics or health value.
+The newborn's plastic phase is protected from premature death via the $\lambda$-scaled credit
+penalty (Eq.~\ref{eq:credhealth}), which yields zero death penalty when $\lambda_{j} = 0$
+(i.e.\ $E_\text{cum} = 0$), allowing gradient updates to adapt the perturbed weights toward
+positive resonance before facing full Darwinian accountability.
 
 The child inherits $\alpha_\text{parent}$ (not re-randomized), since $\alpha$ encodes the
 correct operating scale; re-discovery from scratch would delay specialization.

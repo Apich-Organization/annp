@@ -32,7 +32,7 @@ fn test_subnode_spawn_from_parent() {
 
     let gamma = 0.99;
     let parent = Subnode::new_random(0, d_head, ffn_dim, alpha, gamma);
-    let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim, gamma);
+    let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim, gamma, 1.0);
 
     assert_eq!(child.subnode_id, 1);
 

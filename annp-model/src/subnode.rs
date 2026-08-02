@@ -185,12 +185,38 @@ impl Subnode {
     /// variance ensures `SE = sqrt(m2 / count) > 0`, allowing the Cauchy distribution's heavy tails
     /// to generate natural, Bayesian-justified exploration opportunities while the child's
     /// plastic weights (lambda = 0) adapt to the new manifold. Zero extra hyperparameters.
+    ///
+    /// ## Initial Health — Cascade-Safety Invariant
+    ///
+    /// The child is initialized with `health = health_base` (from `MicroBlockConfig`),
+    /// passed explicitly by the caller to avoid hardcoding.
+    ///
+    /// ### Why `health_base` and NOT a larger multiple?
+    /// The Darwinian neurogenesis threshold for `n` existing subnodes is:
+    ///   `threshold(n) = health_base * (1 + n)`
+    /// After spawning, `n` increases by 1, so the child faces:
+    ///   `threshold(n+1) = health_base * (n + 2)`
+    /// For the first split (n=1 → child faces n+1=2 subnodes):
+    ///   `threshold = health_base * (1 + 2) = 3 * health_base`
+    /// The child's health must satisfy: `h_child_init < 3 * health_base`
+    /// → `health_base < 3 * health_base` ✓ for any positive health_base.
+    ///
+    /// Any multiplier k ≥ 3 would violate this for the first split, causing
+    /// the child (which inherits positive credit prior via Bayesian inheritance)
+    /// to immediately trigger cascade neurogenesis upon first Thompson Sampling
+    /// selection — filling `subnode_max` with untrained subnodes in a handful of batches.
+    ///
+    /// k=1 (`h_init = health_base`) is the largest cascade-safe integral multiplier
+    /// for the first-split case. The newborn's plastic phase is protected against
+    /// premature death by the λ-scaled credit penalty (λ=0 when E_cum=0 → zero
+    /// death penalty on initial weight-perturbation noise).
     pub fn spawn_from_parent(
         subnode_id: usize,
         parent: &Subnode,
         d_head: usize,
         ffn_dim: usize,
         _gamma: f32,
+        health_base: f32,
     ) -> Self {
         let mut rng = rand::rng();
         let epsilon = 1.0 / (d_head as f32 * ffn_dim as f32).sqrt();
@@ -224,12 +250,10 @@ impl Subnode {
             alpha: parent.alpha, // Inherit operating scale
             activation_count: 0,
             credit_stats: child_credit_stats,
-            // IMPORTANT: health = 1.0 is a dimensional placeholder.
-            // The caller (try_subnode_neurogenesis in micro_block.rs) MUST override this
-            // with h_init = d_head * health_base, which is dimensionally paired with the
-            // passive decay rate (1/d_head per batch), giving the newborn a d_head²-batch
-            // embryonic runway before entering fair Thompson Sampling competition.
-            health: 1.0,
+            // h_init = health_base (passed from MicroBlockConfig via caller).
+            // Cascade-safety: health_base < 3*health_base (2-subnode threshold) for any
+            // positive health_base. See fn doc for the full cascade-safety invariant proof.
+            health: health_base,
             d_weights: None,
             cumulative_energy: 0.0, // Child starts plastic! (lambda = 0 → full plasticity)
             last_p_in: vec![0.0f32; d_head],
@@ -268,7 +292,7 @@ mod tests {
         let gamma = 0.99;
         let parent = Subnode::new_random(0, d_head, ffn_dim, 0.7, gamma);
 
-        let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim, gamma);
+        let child = Subnode::spawn_from_parent(1, &parent, d_head, ffn_dim, gamma, 1.0);
 
         assert_eq!(child.subnode_id, 1);
         assert_eq!(child.alpha, 0.7);

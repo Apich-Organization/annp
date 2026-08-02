@@ -172,58 +172,61 @@ impl MicroBlockNode {
         let active_idx = self.active_subnode;
         let active = &self.subnodes[active_idx];
 
-        // Darwinian Cellular Neurogenesis:
+        // Darwinian Cellular Neurogenesis — four gates must all pass:
+        //
         // 1. Capacity check: must not exceed subnode_max.
-        // 2. Health / vitality surplus: the active subnode has accumulated sufficient
+        // 2. Maturity check: the active subnode must have actually processed input
+        //    (cumulative_energy > 0). This prevents a freshly spawned child (which inherits
+        //    the parent's credit_stats with count=2 and positive mean via Bayesian prior) from
+        //    immediately triggering another split before its weights have adapted at all.
+        //    Without this guard, a child born with high health could cascade neurogenesis to
+        //    subnode_max in just a few batches, filling the network with untrained subnodes.
+        //    cumulative_energy > 0 is true only after the subnode has been selected at least
+        //    once — the minimal biological equivalent of "has received any input signal".
+        // 3. Health / vitality surplus: the active subnode has accumulated sufficient
         //    positive credit to support cell division (health > health_base * (1 + len)).
-        // 3. Information variance: the subnode has processed at least 2 distinct batches
+        //    NOTE: spawn_from_parent sets h_child_init = health_base = 1.0, which is always
+        //    LESS than the 2-subnode threshold health_base * (1+2) = 3*health_base, so cascade
+        //    is doubly prevented by both the maturity guard and the health threshold.
+        // 4. Information variance: the subnode has processed at least 2 distinct batches
         //    and observed non-zero credit variance across inputs, justifying specialization.
         let health_threshold = self.config.health_base * (1.0 + self.subnodes.len() as f32);
+        let has_maturity = active.cumulative_energy > 0.0;
         let has_vitality = active.health > health_threshold;
         let has_variance = active.credit_stats.count > 1.0 && active.credit_stats.variance() > 0.0;
 
-        if self.subnodes.len() < self.config.subnode_max && has_vitality && has_variance {
+        if self.subnodes.len() < self.config.subnode_max
+            && has_maturity
+            && has_vitality
+            && has_variance
+        {
             let parent_subnode = active.clone();
             let new_subnode_id = self.subnodes.len();
-            let mut new_subnode = Subnode::spawn_from_parent(
+            let new_subnode = Subnode::spawn_from_parent(
                 new_subnode_id,
                 &parent_subnode,
                 self.config.d_head,
                 self.config.d_head * self.config.ffn_expansion,
                 1.0 - 1.0 / (self.config.d_head * self.config.d_head) as f32,
+                self.config.health_base, // h_init from config; cascade-safe: health_base < 3*health_base
             );
-
-            // Newborn embryonic health reserve:
-            //
-            // spawn_from_parent initializes health = 1.0 (a placeholder). Here we override
-            // it with a dimensionally-consistent value:
-            //
-            //   h_child_init = d_head * health_base
-            //
-            // WHY d_head * health_base?
-            // Passive health decay rate = 1/d_head per batch.
-            // With h_init = 1.0, the newborn can survive at most d_head batches without
-            // any credit-driven recovery — too short for gradient updates to differentiate
-            // its perturbed weights away from the parent before Thompson Sampling eliminates it.
-            //
-            // With h_init = d_head * health_base:
-            //   Embryonic runway = (d_head * health_base) / (1/d_head) = d_head² * health_base batches
-            // This gives the child d_head² steps to accumulate enough credit observations
-            // to compete fairly via Thompson Sampling — proportional to the fast_weight
-            // matrix size (d_head × d_head), i.e. as long as it takes to fill the
-            // associative memory once. Zero new hyperparameters; both d_head and
-            // health_base are existing structural parameters.
-            new_subnode.health = self.config.d_head as f32 * self.config.health_base;
+            // spawn_from_parent receives health_base from self.config.health_base.
+            // Cascade-safety: health_base < health_base*(1+2) = 3*health_base for any positive
+            // health_base, so the child cannot immediately trigger another neurogenesis split.
+            // The newborn's lambda-scaled credit penalty (lambda=0 when E_cum=0) additionally
+            // ensures zero death penalty on initial weight-perturbation noise.
 
             if self.use_cuda {
+                let mut new_subnode = new_subnode;
                 new_subnode.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
                     &new_subnode.w_gate,
                     &new_subnode.w_up,
                     &new_subnode.w_down,
                 ));
+                self.subnodes.push(new_subnode);
+            } else {
+                self.subnodes.push(new_subnode);
             }
-
-            self.subnodes.push(new_subnode);
             self.split_count += 1;
 
             // Offspring creation consumes half the parent's cellular energy/health
@@ -967,8 +970,9 @@ mod tests {
         // Initially health = 1.0, cannot trigger neurogenesis
         assert!(!node.try_subnode_neurogenesis());
 
-        // Boost health and provide variance observations
+        // Boost health and provide variance observations and energy (to satisfy maturity guard)
         node.subnodes[0].health = 2.5;
+        node.subnodes[0].cumulative_energy = 1.0; // Maturity guard: must have processed input
         node.subnodes[0].credit_stats.observe(0.1);
         node.subnodes[0].credit_stats.observe(0.3);
         assert!(node.subnodes[0].credit_stats.variance() > 0.0);
@@ -979,12 +983,14 @@ mod tests {
         assert_eq!(node.split_count, 1);
         // Parent health should be halved
         assert!((node.subnodes[0].health - 1.25).abs() < 1e-5);
-        // Child health = d_head * health_base = 64 * 1.0 = 64.0
-        // (embryonic runway: h_init / (1/d_head) = d_head² batches of passive decay tolerance)
-        assert!((node.subnodes[1].health - 64.0).abs() < 1e-3);
+        // Child health = health_base = 1.0. This is intentionally below the 2-subnode
+        // neurogenesis threshold (3.0), preventing cascade neurogenesis. Newborn protection
+        // against negative credit is via lambda-scaled penalty (lambda=0 when E_cum=0).
+        assert!((node.subnodes[1].health - 1.0).abs() < 1e-5);
 
         // For 2 subnodes, threshold is 1.0 * (1 + 2) = 3.0.
-        // Parent has health 1.25, which is < 3.0 so no further neurogenesis.
+        // Parent has health 1.25, child has health 1.0, both < 3.0 so no further neurogenesis.
+        // Additionally, child cumulative_energy = 0.0 (has_maturity = false) blocks it anyway.
         assert!(!node.try_subnode_neurogenesis());
 
         // Test pruning: set subnode 1 health to 0
