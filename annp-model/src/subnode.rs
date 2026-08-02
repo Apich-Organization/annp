@@ -224,9 +224,14 @@ impl Subnode {
             alpha: parent.alpha, // Inherit operating scale
             activation_count: 0,
             credit_stats: child_credit_stats,
+            // IMPORTANT: health = 1.0 is a dimensional placeholder.
+            // The caller (try_subnode_neurogenesis in micro_block.rs) MUST override this
+            // with h_init = d_head * health_base, which is dimensionally paired with the
+            // passive decay rate (1/d_head per batch), giving the newborn a d_head²-batch
+            // embryonic runway before entering fair Thompson Sampling competition.
             health: 1.0,
             d_weights: None,
-            cumulative_energy: 0.0, // Child starts plastic!
+            cumulative_energy: 0.0, // Child starts plastic! (lambda = 0 → full plasticity)
             last_p_in: vec![0.0f32; d_head],
             last_prediction: vec![0.0f32; d_head],
             last_token_id: None,

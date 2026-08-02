@@ -664,6 +664,18 @@ $s \approx \sqrt{2/(d+d_\text{ffn})}$, providing sufficient diversity for diverg
 specialization while preserving the parent's learned functional scale.
 The parent's health is halved upon spawning ($h_{j^*} \leftarrow h_{j^*}/2$),
 modeling the energetic cost of cell division.
+The newborn is initialized with an embryonic health reserve:
+\begin{equation}
+  h_\text{child,init} = d_\text{head} \cdot h_\text{base},
+  \label{eq:child_health_init}
+\end{equation}
+which is dimensionally paired with the passive decay rate $1/d_\text{head}$ per batch, giving a
+runway of $d_\text{head}^2 \cdot h_\text{base}$ batches.
+This interval is commensurate with filling the $d_\text{head} \times d_\text{head}$ associative
+memory once \textemdash{} sufficient for gradient updates to differentiate the child's plastic
+weights before it enters fair Thompson Sampling competition.
+No new hyperparameters are introduced; $d_\text{head}$ and $h_\text{base}$ are pre-existing
+structural parameters.
 
 The child inherits $\alpha_\text{parent}$ (not re-randomized), since $\alpha$ encodes the
 correct operating scale; re-discovery from scratch would delay specialization.

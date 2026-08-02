@@ -193,6 +193,28 @@ impl MicroBlockNode {
                 1.0 - 1.0 / (self.config.d_head * self.config.d_head) as f32,
             );
 
+            // Newborn embryonic health reserve:
+            //
+            // spawn_from_parent initializes health = 1.0 (a placeholder). Here we override
+            // it with a dimensionally-consistent value:
+            //
+            //   h_child_init = d_head * health_base
+            //
+            // WHY d_head * health_base?
+            // Passive health decay rate = 1/d_head per batch.
+            // With h_init = 1.0, the newborn can survive at most d_head batches without
+            // any credit-driven recovery — too short for gradient updates to differentiate
+            // its perturbed weights away from the parent before Thompson Sampling eliminates it.
+            //
+            // With h_init = d_head * health_base:
+            //   Embryonic runway = (d_head * health_base) / (1/d_head) = d_head² * health_base batches
+            // This gives the child d_head² steps to accumulate enough credit observations
+            // to compete fairly via Thompson Sampling — proportional to the fast_weight
+            // matrix size (d_head × d_head), i.e. as long as it takes to fill the
+            // associative memory once. Zero new hyperparameters; both d_head and
+            // health_base are existing structural parameters.
+            new_subnode.health = self.config.d_head as f32 * self.config.health_base;
+
             if self.use_cuda {
                 new_subnode.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
                     &new_subnode.w_gate,
@@ -957,11 +979,12 @@ mod tests {
         assert_eq!(node.split_count, 1);
         // Parent health should be halved
         assert!((node.subnodes[0].health - 1.25).abs() < 1e-5);
-        // Child health should be 1.0
-        assert_eq!(node.subnodes[1].health, 1.0);
+        // Child health = d_head * health_base = 64 * 1.0 = 64.0
+        // (embryonic runway: h_init / (1/d_head) = d_head² batches of passive decay tolerance)
+        assert!((node.subnodes[1].health - 64.0).abs() < 1e-3);
 
-        // For 2 subnodes, threshold is 1.0 * (1 + 2) = 3.0
-        // Parent has health 1.25, child has 1.0, neither exceeds 3.0
+        // For 2 subnodes, threshold is 1.0 * (1 + 2) = 3.0.
+        // Parent has health 1.25, which is < 3.0 so no further neurogenesis.
         assert!(!node.try_subnode_neurogenesis());
 
         // Test pruning: set subnode 1 health to 0
