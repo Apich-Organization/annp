@@ -92,15 +92,42 @@ enum Commands {
         /// Override min_hop floor
         #[arg(long)]
         min_hop: Option<u16>,
+        /// Override initial particle energy
+        #[arg(long)]
+        initial_energy: Option<f32>,
+        /// Override weight decay factor
+        #[arg(long)]
+        weight_decay: Option<f32>,
+        /// Override completed epoch count
+        #[arg(short = 'e', long)]
+        epoch: Option<usize>,
+        /// Override completed stage count
+        #[arg(short = 's', long)]
+        stage: Option<usize>,
+        /// Reset transient TD particle state (last_p_in, last_prediction, last_token_id)
+        #[arg(long)]
+        reset_state: bool,
+        /// Reset runtime statistics (activation counts, credit stats, node health)
+        #[arg(long)]
+        reset_stats: bool,
+        /// Reset Hebbian associative memory matrices (fast_weight) and cumulative energy
+        #[arg(long)]
+        reset_fast_weights: bool,
+        /// Reset routing table weights and edge credit statistics
+        #[arg(long)]
+        reset_routing: bool,
     },
-    /// Export P2P mesh topology and Q-Routing tables from checkpoint
+    /// Export P2P mesh topology and Q-Routing tables from checkpoint (JSON, DOT, CSV, Summary)
     Export {
-        /// Checkpoint file path
-        #[arg(short, long)]
+        /// Checkpoint file path (.annpb or .json)
+        #[arg(short = 'k', long)]
         checkpoint: PathBuf,
-        /// Output JSON path for topology routing tables
-        #[arg(short, long, default_value = "topology_routing.json")]
+        /// Output file path
+        #[arg(short = 'o', long, default_value = "topology_routing.json")]
         out: PathBuf,
+        /// Export format: "json", "dot" (Graphviz), "csv" (Edge list), or "summary" (auto-detected if omitted)
+        #[arg(short = 'f', long)]
+        format: Option<String>,
     },
 }
 
@@ -144,8 +171,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             max_hop,
             min_hop,
-        } => execute_edit_model(checkpoint, config, max_hop, min_hop)?,
-        Commands::Export { checkpoint, out } => execute_export(checkpoint, out)?,
+            initial_energy,
+            weight_decay,
+            epoch,
+            stage,
+            reset_state,
+            reset_stats,
+            reset_fast_weights,
+            reset_routing,
+        } => execute_edit_model(
+            checkpoint,
+            config,
+            max_hop,
+            min_hop,
+            initial_energy,
+            weight_decay,
+            epoch,
+            stage,
+            reset_state,
+            reset_stats,
+            reset_fast_weights,
+            reset_routing,
+        )?,
+        Commands::Export {
+            checkpoint,
+            out,
+            format,
+        } => execute_export(checkpoint, out, format)?,
     }
 
     Ok(())

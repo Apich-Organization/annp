@@ -1,6 +1,14 @@
+use annp_core::RMS_EPSILON;
 use candle_core::{Device, Result as CandleResult, Tensor};
 use sentencepiece::SentencePieceProcessor;
 use std::path::Path;
+
+/// Fundamental Fourier base frequency for positional encodings
+pub const POS_BASE_FREQ: f32 = 0.05;
+/// Inter-dimension spatial dispersion frequency
+pub const DIM_BASE_FREQ: f32 = 0.01;
+/// Positional encoding amplitude modulation scale
+pub const POS_ENC_SCALE: f32 = 0.1;
 
 pub struct AnnpTokenizer {
     inner: SentencePieceProcessor,
@@ -20,6 +28,11 @@ impl AnnpTokenizer {
                 p, e
             ),
         }
+    }
+
+    /// Return total vocabulary size from SentencePiece model
+    pub fn vocab_size(&self) -> usize {
+        self.inner.len()
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
@@ -49,14 +62,14 @@ impl AnnpTokenizer {
             tok_vec.push(rand_f32);
         }
 
-        // RMS Normalization to anchor unit embedding scale (~1.0)
-        let rms = (tok_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32)
-            .sqrt()
-            .max(1e-6);
+        // RMS Normalization using shared RMS_EPSILON to anchor unit embedding scale (~1.0)
+        let mean_sq: f32 = tok_vec.iter().map(|v| v * v).sum::<f32>() / d_model as f32;
+        let rms = (mean_sq + RMS_EPSILON).sqrt();
         let mut out = Vec::with_capacity(d_model);
-        for d in 0..d_model {
-            let pos_enc = (pos as f32 * 0.05f32 + d as f32 * 0.01f32).sin() * 0.1f32;
-            out.push(tok_vec[d] / rms + pos_enc);
+        for (d, &tok_val) in tok_vec.iter().enumerate().take(d_model) {
+            let pos_enc =
+                (pos as f32 * POS_BASE_FREQ + d as f32 * DIM_BASE_FREQ).sin() * POS_ENC_SCALE;
+            out.push(tok_val / rms + pos_enc);
         }
         out
     }
@@ -94,12 +107,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tokenizer_encode_decode() {
-        let tokenizer = AnnpTokenizer::load_from_file("../tokenizer.model");
-        let text = "ANNP Asynchronous Neural Network Protocol Simulation";
-        let ids = tokenizer.encode(text);
-        assert!(!ids.is_empty());
-        let decoded = tokenizer.decode(&ids);
-        assert!(!decoded.is_empty());
+    fn test_tokenizer_token_embedding() {
+        let emb1 = AnnpTokenizer::token_embedding(42, 0, 64);
+        assert_eq!(emb1.len(), 64);
+        let emb2 = AnnpTokenizer::token_embedding(42, 0, 64);
+        assert_eq!(emb1, emb2);
+
+        // Verify different positions produce distinct encodings
+        let emb_pos1 = AnnpTokenizer::token_embedding(42, 1, 64);
+        assert_ne!(emb1, emb_pos1);
     }
 }

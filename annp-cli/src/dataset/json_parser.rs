@@ -1,4 +1,5 @@
 use crate::tokenizer::AnnpTokenizer;
+use annp_core::RMS_EPSILON;
 use candle_core::{Device, Result, Tensor};
 use serde_json::Value;
 use std::fs::File;
@@ -117,9 +118,8 @@ pub fn parse_value_to_tensor(
         }
 
         if seq_len > 0 && flat.len() == seq_len * d_model {
-            let rms = (flat.iter().map(|x| x * x).sum::<f32>() / flat.len() as f32)
-                .sqrt()
-                .max(1e-6);
+            let mean_sq: f32 = flat.iter().map(|x| x * x).sum::<f32>() / flat.len() as f32;
+            let rms = (mean_sq + RMS_EPSILON).sqrt();
             for x in flat.iter_mut() {
                 *x /= rms;
             }

@@ -9,6 +9,7 @@ default = ["cuda"]
 cuda = []
 
 [dependencies]
+annp-core = { path = "../annp-core" }
 
 [build-dependencies]
 cc = "1.0"

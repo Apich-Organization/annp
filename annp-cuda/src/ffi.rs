@@ -1,6 +1,9 @@
 #[cfg(any(feature = "cuda", cuda_available))]
 use std::ffi::c_void;
 
+#[allow(unused_imports)]
+use annp_core::RMS_EPSILON;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParticleCudaHeader {
@@ -158,7 +161,7 @@ impl CudaMicroBlockRunner {
 
                     // Step 1: RMSNorm(p_in)
                     let sq_sum_in: f32 = curr_p.iter().map(|&v| v * v).sum();
-                    let inv_rms_in = 1.0 / (sq_sum_in / (d_head as f32) + 1e-8).sqrt();
+                    let inv_rms_in = 1.0 / (sq_sum_in / (d_head as f32) + RMS_EPSILON).sqrt();
                     let mut p_in_normed = vec![0.0f32; d_head];
                     for d in 0..d_head {
                         p_in_normed[d] = curr_p[d] * inv_rms_in;
@@ -182,7 +185,7 @@ impl CudaMicroBlockRunner {
 
                     // Step 4: RMSNorm(s_mid) → s_mid_normed (norm the accumulated state for FFN input)
                     let sq_sum_mid: f32 = s_mid.iter().map(|&v| v * v).sum();
-                    let inv_rms_mid = 1.0 / (sq_sum_mid / (d_head as f32) + 1e-8).sqrt();
+                    let inv_rms_mid = 1.0 / (sq_sum_mid / (d_head as f32) + RMS_EPSILON).sqrt();
                     let mut s_mid_normed = vec![0.0f32; d_head];
                     for d in 0..d_head {
                         s_mid_normed[d] = s_mid[d] * inv_rms_mid;
@@ -305,8 +308,8 @@ impl CudaParticleRouter {
         _radius: f32,
         out_assignments: &mut [i32],
     ) {
-        for i in 0..batch_size {
-            out_assignments[i] = (i % num_nodes) as i32;
+        for (i, slot) in out_assignments.iter_mut().enumerate().take(batch_size) {
+            *slot = (i % num_nodes) as i32;
         }
     }
 }

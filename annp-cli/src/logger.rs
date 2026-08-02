@@ -109,7 +109,7 @@ impl AnnpLogger {
         metrics: &annp_model::BatchMetrics,
     ) {
         let msg = format!(
-            "[Epoch {:2}/{:2} | Batch {:4}] Loss: {:.5} (EMA: {:.5}) | Halt: {:.1}% | Gini: {:.3} | Hops: {:.2}",
+            "[Epoch {:2}/{:2} | Batch {:4}] Loss: {:.4} (EMA: {:.4}) | Halt: {:.2}% | Gini: {:.4} | Hops: {:.4}",
             epoch,
             total_epochs,
             batch_idx,
@@ -127,7 +127,7 @@ impl AnnpLogger {
             let timestamp = chrono_timestamp();
             let _ = writeln!(
                 csv,
-                "{},{},{},{:.6},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                "{},{},{},{:.12},{:.12},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8},{:.8}",
                 timestamp,
                 epoch,
                 batch_idx,
@@ -153,7 +153,7 @@ impl AnnpLogger {
         metrics: &annp_model::BatchMetrics,
     ) {
         let msg = format!(
-            "Epoch {}/{} Metrics Summary:\n  - Avg Loss: {:.6}\n  - Avg Hop Count: {:.3}\n  - Early Halting Rate: {:.2}%\n  - Signal Energy (var): {:.5}\n  - Node Util Gini: {:.4}\n  - Attention Entropy: {:.4}\n  - Avg Active Subnodes: {:.2}\n  - Credit Volatility: {:.5}\n  - Mean Temporal Affinity: {:.4}",
+            "Epoch {}/{} Metrics Summary:\n  - Avg Loss: {:.4}\n  - Avg Hop Count: {:.4}\n  - Early Halting Rate: {:.2}%\n  - Signal Energy (var): {:.4}\n  - Node Util Gini: {:.4}\n  - Attention Entropy: {:.4}\n  - Avg Active Subnodes: {:.4}\n  - Credit Volatility: {:.4}\n  - Mean Temporal Affinity: {:.4}",
             epoch,
             total_epochs,
             avg_loss,
@@ -206,5 +206,77 @@ fn chrono_timestamp() -> String {
         format!("{:02}:{:02}:{:02}.{:03}", hours, mins, s, millis)
     } else {
         "00:00:00.000".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annp_model::BatchMetrics;
+
+    #[test]
+    fn test_logger_creation_and_csv_precision() {
+        let tmp_dir = std::env::temp_dir();
+        let log_file = tmp_dir.join("test_annp_logger_run.log");
+        let csv_file = tmp_dir.join("test_annp_logger_run.csv");
+
+        let _ = fs::remove_file(&log_file);
+        let _ = fs::remove_file(&csv_file);
+
+        let logger = AnnpLogger::new(&tmp_dir, "test", Some(&log_file));
+        logger.log("TEST_TAG", "Sample test log entry");
+
+        let metrics = BatchMetrics {
+            avg_signal_energy: 1.25,
+            utilization_gini: 0.15,
+            early_halting_rate: 0.05,
+            avg_hop_count: 3.5,
+            avg_memory_density: 0.85,
+            avg_subnodes: 1.5,
+            avg_credit_volatility: 0.02,
+            avg_temporal_affinity: 0.95,
+        };
+
+        logger.log_step(1, 5, 42, 2.75, 2.8, &metrics);
+
+        // Verify log file content
+        assert!(log_file.exists());
+        let log_text = fs::read_to_string(&log_file).unwrap();
+        assert!(log_text.contains("Sample test log entry"));
+        assert!(log_text.contains("TRAIN_STEP"));
+
+        // Verify CSV file content and precision
+        assert!(csv_file.exists());
+        let csv_text = fs::read_to_string(&csv_file).unwrap();
+        let lines: Vec<&str> = csv_text.lines().collect();
+        assert!(lines.len() >= 2);
+        assert_eq!(
+            lines[0],
+            "timestamp,epoch,batch,step_loss,ema_loss,early_halting_rate,gini,avg_hops,avg_energy,memory_density,active_subnodes,credit_volatility,temporal_affinity"
+        );
+
+        let row = lines[1];
+        let fields: Vec<&str> = row.split(',').collect();
+        assert_eq!(fields[1], "1"); // epoch
+        assert_eq!(fields[2], "42"); // batch_idx
+
+        // Verify that all 10 metric fields are formatted with exactly 8 decimal places
+        for field in &fields[3..13] {
+            let parts: Vec<&str> = field.split('.').collect();
+            assert_eq!(parts.len(), 2, "Field {} is missing decimal point", field);
+            assert_eq!(
+                parts[1].len(),
+                8,
+                "Field {} does not have 8 decimal places",
+                field
+            );
+        }
+
+        // Verify numeric values within single-precision epsilon
+        assert!((fields[3].parse::<f32>().unwrap() - 2.75).abs() < 1e-6);
+        assert!((fields[4].parse::<f32>().unwrap() - 2.8).abs() < 1e-6);
+
+        let _ = fs::remove_file(log_file);
+        let _ = fs::remove_file(csv_file);
     }
 }

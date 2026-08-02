@@ -485,14 +485,13 @@ impl ModelCheckpoint {
                 file.read_exact(&mut buf4)?;
                 let ec_len = u32::from_le_bytes(buf4) as usize;
                 for _ in 0..ec_len {
-                    let count_f32: f32;
-                    if version >= 7 {
+                    let count_f32 = if version >= 7 {
                         file.read_exact(&mut buf4)?;
-                        count_f32 = f32::from_le_bytes(buf4);
+                        f32::from_le_bytes(buf4)
                     } else {
                         file.read_exact(&mut buf8)?;
-                        count_f32 = u64::from_le_bytes(buf8) as f32;
-                    }
+                        u64::from_le_bytes(buf8) as f32
+                    };
                     file.read_exact(&mut buf4)?;
                     let mean = f32::from_le_bytes(buf4);
                     file.read_exact(&mut buf4)?;
@@ -550,7 +549,14 @@ impl ModelCheckpoint {
                     .subnodes
                     .iter()
                     .map(|s| {
-                        let mut sub = Subnode {
+                        let d_weights = if use_cuda {
+                            Some(annp_cuda::ffi::CudaDeviceWeights::new(
+                                &s.w_gate, &s.w_up, &s.w_down,
+                            ))
+                        } else {
+                            None
+                        };
+                        Subnode {
                             subnode_id: s.subnode_id,
                             w_gate: s.w_gate.clone(),
                             w_up: s.w_up.clone(),
@@ -559,16 +565,8 @@ impl ModelCheckpoint {
                             activation_count: s.activation_count,
                             credit_stats: s.credit_stats,
                             health: s.health,
-                            d_weights: None,
-                        };
-                        if use_cuda {
-                            sub.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
-                                &sub.w_gate,
-                                &sub.w_up,
-                                &sub.w_down,
-                            ));
+                            d_weights,
                         }
-                        sub
                     })
                     .collect();
             }
@@ -632,10 +630,12 @@ mod tests {
 
     #[test]
     fn test_checkpoint_binary_and_json_roundtrip() {
-        let mut config = MicroBlockConfig::default();
-        config.mesh_rows = 4;
-        config.mesh_cols = 4;
-        config.d_head = 32;
+        let config = MicroBlockConfig {
+            mesh_rows: 4,
+            mesh_cols: 4,
+            d_head: 32,
+            ..MicroBlockConfig::default()
+        };
 
         let model = ANNPModel::new(16, 2, config.clone(), Device::Cpu);
         let mut ckpt = ModelCheckpoint::extract_from_model(&model, 1, 5);

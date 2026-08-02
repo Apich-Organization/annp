@@ -3,6 +3,10 @@ use annp_core::{MicroBlockConfig, Particle, RMS_EPSILON};
 use annp_cuda;
 use rand::Rng;
 
+/// Damping factor applied to negative credit when updating subnode health
+/// (gentler penalty to prevent premature pruning from transient noise)
+const NEGATIVE_CREDIT_DAMPING: f32 = 0.5;
+
 /// # MicroBlockNode — ANNP's fundamental decentralized compute cell
 ///
 /// Each node processes particle streams independently with no global coordination.
@@ -483,12 +487,12 @@ impl MicroBlockNode {
 
                 // Forward for fast_weight
                 let mut attn_out = vec![0.0f32; d_head];
-                for r in 0..d_head {
+                for (r, attn_val) in attn_out.iter_mut().enumerate() {
                     let mut sum = 0.0;
-                    for c in 0..d_head {
-                        sum += self.fast_weight[r * d_head + c] * p_in_normed[c];
+                    for (c, &in_val) in p_in_normed.iter().enumerate() {
+                        sum += self.fast_weight[r * d_head + c] * in_val;
                     }
-                    attn_out[r] = sum;
+                    *attn_val = sum;
                 }
 
                 let subnode = &mut self.subnodes[active];
@@ -562,8 +566,8 @@ impl MicroBlockNode {
                 for f in 0..ffn_dim {
                     let dg = d_gate_arr[f] * alpha;
                     let du = d_up_arr[f] * alpha;
-                    for d in 0..d_head {
-                        d_s_mid_normed[d] += dg * subnode.w_gate[d * ffn_dim + f]
+                    for (d, mid_val) in d_s_mid_normed.iter_mut().enumerate() {
+                        *mid_val += dg * subnode.w_gate[d * ffn_dim + f]
                             + du * subnode.w_up[d * ffn_dim + f];
                     }
                 }
@@ -574,7 +578,7 @@ impl MicroBlockNode {
                     .map(|(&dy, &y)| dy * y)
                     .sum();
                 let mut d_s_mid_total = vec![0.0f32; d_head];
-                for d in 0..d_head {
+                for (d, total_val) in d_s_mid_total.iter_mut().enumerate() {
                     // Correct RMSNorm chain rule for d_s_mid:
                     //   p_out = s_mid + alpha * FFN(RMSNorm(s_mid))
                     //   ∂p_out/∂s_mid = I + alpha * (∂FFN/∂s_mid_normed) * (∂RMSNorm/∂s_mid)
@@ -585,7 +589,7 @@ impl MicroBlockNode {
                     // The residual branch contributes local_err[d] directly (∂p_out/∂s_mid = I).
                     let d_s_mid_ffn = inv_rms_ffn
                         * (d_s_mid_normed[d] - s_mid_normed[d] * dot_product / (d_head as f32));
-                    d_s_mid_total[d] = local_err[d] + d_s_mid_ffn;
+                    *total_val = local_err[d] + d_s_mid_ffn;
                 }
 
                 let max_grad = 1.0 / (d_head as f32).sqrt();
@@ -600,11 +604,11 @@ impl MicroBlockNode {
                 // time the first learning step fires, it's already ≈ batch_energy ≈ 64,
                 // giving lambda ≈ 0.875 from the very first update.
                 let lambda = 1.0 - 1.0 / self.cumulative_energy.max(1.0).sqrt();
-                for r in 0..d_head {
-                    let d_attn_out = d_s_mid_total[r] * alpha;
-                    for c in 0..d_head {
+                for (r, &d_s_mid) in d_s_mid_total.iter().enumerate() {
+                    let d_attn_out = d_s_mid * alpha;
+                    for (c, &in_val) in p_in_normed.iter().enumerate() {
                         let idx = r * d_head + c;
-                        let grad = (d_attn_out * p_in_normed[c]).clamp(-max_grad, max_grad);
+                        let grad = (d_attn_out * in_val).clamp(-max_grad, max_grad);
                         // fast_weight: lambda provides energy-driven retention hardening;
                         // lr controls the write magnitude (same as FFN for consistency).
                         self.fast_weight[idx] = self.fast_weight[idx] * lambda - lr * grad;
@@ -662,12 +666,12 @@ impl MicroBlockNode {
         }
 
         let mut attn_out = vec![0.0f32; d_head];
-        for r in 0..d_head {
+        for (r, attn_val) in attn_out.iter_mut().enumerate() {
             let mut sum = 0.0;
-            for c in 0..d_head {
-                sum += self.fast_weight[r * d_head + c] * p_in_normed[c];
+            for (c, &in_val) in p_in_normed.iter().enumerate() {
+                sum += self.fast_weight[r * d_head + c] * in_val;
             }
-            attn_out[r] = sum;
+            *attn_val = sum;
         }
 
         let mut temp_out = vec![0.0f32; d_head];
@@ -755,12 +759,12 @@ impl MicroBlockNode {
             }
 
             let mut agreement_before = 0.0f32;
-            for r in 0..d_head {
+            for (r, &p_r) in p_normed_before.iter().enumerate() {
                 let mut sum = 0.0;
-                for c in 0..d_head {
-                    sum += self.fast_weight[r * d_head + c] * p_normed_before[c];
+                for (c, &p_c) in p_normed_before.iter().enumerate() {
+                    sum += self.fast_weight[r * d_head + c] * p_c;
                 }
-                agreement_before += sum * p_normed_before[r];
+                agreement_before += sum * p_r;
             }
 
             let previous_credit = p_ref.credit;
@@ -780,12 +784,12 @@ impl MicroBlockNode {
             }
 
             let mut agreement_after = 0.0f32;
-            for r in 0..d_head {
+            for (r, &p_r) in p_normed_after.iter().enumerate() {
                 let mut sum = 0.0;
-                for c in 0..d_head {
-                    sum += self.fast_weight[r * d_head + c] * p_normed_after[c];
+                for (c, &p_c) in p_normed_after.iter().enumerate() {
+                    sum += self.fast_weight[r * d_head + c] * p_c;
                 }
-                agreement_after += sum * p_normed_after[r];
+                agreement_after += sum * p_r;
             }
 
             // Credit = ΔR: how much did this node's transformation increase the particle's
@@ -847,7 +851,7 @@ impl MicroBlockNode {
             } else {
                 // Negative credit: gentler penalty to avoid premature death from noise.
                 // A subnode needs sustained poor performance (not one bad batch) to be replaced.
-                self.subnodes[active].health += mean_credit * 0.5;
+                self.subnodes[active].health += mean_credit * NEGATIVE_CREDIT_DAMPING;
             }
         }
 
