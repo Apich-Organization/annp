@@ -290,6 +290,27 @@ impl MicroBlockNode {
             start = end;
         }
 
+        // Health decay: each subnode loses health each sub-batch regardless of selection.
+        //
+        // Rate = 1/d_head (fixed, not proportional to subnode count).
+        // WHY FIXED? If decay ∝ 1/len(subnodes), adding more subnodes would slow each one's
+        // decay, letting weak subnodes survive longer purely by being numerous — a positive
+        // feedback loop that undermines natural selection. Fixed 1/d_head means each subnode
+        // competes on its own merits, independent of population size.
+        //
+        // Recovery (below): only the ACTIVE (Thompson-sampled winner) subnode recovers health
+        // by alpha/d_head per step. Net health change:
+        //   active:   +alpha/d_head - 1/d_head = (alpha-1)/d_head  (positive when alpha>1)
+        //   inactive: -1/d_head per step (always declining)
+        // Subnodes with alpha < 1 must compensate via credit-driven health bonus.
+        //
+        // Passive health decay happens ONCE per full batch (matching neurogenesis & pruning lifecycle frequency).
+        // Rate = 1/d_head per full batch.
+        let decay = 1.0 / (self.config.d_head as f32);
+        for subnode in self.subnodes.iter_mut() {
+            subnode.health -= decay;
+        }
+
         // Neurogenesis and pruning happen ONCE per full batch (not per sub-batch).
         // This ensures enough credit signal has accumulated before making structural decisions.
         self.try_subnode_neurogenesis();
@@ -325,23 +346,7 @@ impl MicroBlockNode {
         let mut best_score = f32::NEG_INFINITY;
         let mut active_idx = 0;
 
-        // Health decay: each subnode loses health each sub-batch regardless of selection.
-        //
-        // Rate = 1/d_head (fixed, not proportional to subnode count).
-        // WHY FIXED? If decay ∝ 1/len(subnodes), adding more subnodes would slow each one's
-        // decay, letting weak subnodes survive longer purely by being numerous — a positive
-        // feedback loop that undermines natural selection. Fixed 1/d_head means each subnode
-        // competes on its own merits, independent of population size.
-        //
-        // Recovery (below): only the ACTIVE (Thompson-sampled winner) subnode recovers health
-        // by alpha/d_head per step. Net health change:
-        //   active:   +alpha/d_head - 1/d_head = (alpha-1)/d_head  (positive when alpha>1)
-        //   inactive: -1/d_head per step (always declining)
-        // Subnodes with alpha < 1 must compensate via credit-driven health bonus (see below).
-        let decay = 1.0 / (d_head as f32);
         for (i, subnode) in self.subnodes.iter_mut().enumerate() {
-            subnode.health -= decay;
-
             // Subnode selection via Student-t Thompson Sampling:
             //   score = credit_mean + SE * t_sample(df)
             //
