@@ -173,17 +173,24 @@ impl Subnode {
     /// Re-randomizing alpha would require the child to re-discover the correct scale
     /// from scratch, slowing specialization.
     ///
-    /// ## Plasticity Reset for Newborns
+    /// ## Bayesian Prior Inheritance for Thompson Sampling
     ///
-    /// `cumulative_energy` is reset to 0.0 so the child starts fully plastic (lambda = 0),
-    /// allowing rapid specialization away from the parent's weights.
-    /// `credit_stats` starts fresh (count=0) for guaranteed first-visit evaluation.
+    /// Rather than starting from fresh zero stats (`count=0`, which produces `m2=0 => SE=0`
+    /// and paralyzes Student-t heavy-tailed exploration after the 2nd sample), the child
+    /// inherits `parent.credit_stats` with `count` set to 2.0.
+    ///
+    /// ### Mathematical Rationale:
+    /// Setting `count = 2.0` yields degrees of freedom `df = count - 1.0 = 1.0`, where Student-t
+    /// reduces to a Cauchy distribution (maximum heavy tails). Inheriting the parent's non-zero
+    /// variance ensures `SE = sqrt(m2 / count) > 0`, allowing the Cauchy distribution's heavy tails
+    /// to generate natural, Bayesian-justified exploration opportunities while the child's
+    /// plastic weights (lambda = 0) adapt to the new manifold. Zero extra hyperparameters.
     pub fn spawn_from_parent(
         subnode_id: usize,
         parent: &Subnode,
         d_head: usize,
         ffn_dim: usize,
-        gamma: f32,
+        _gamma: f32,
     ) -> Self {
         let mut rng = rand::rng();
         let epsilon = 1.0 / (d_head as f32 * ffn_dim as f32).sqrt();
@@ -204,6 +211,11 @@ impl Subnode {
             .map(|&w| w + rng.random_range(-epsilon..epsilon))
             .collect();
 
+        // Bayesian prior inheritance: inherit parent's empirical mean & variance,
+        // but set count = 2.0 (df = 1.0 => Cauchy distribution heavy-tailed exploration)
+        let mut child_credit_stats = parent.credit_stats;
+        child_credit_stats.count = 2.0;
+
         Self {
             subnode_id,
             w_gate,
@@ -211,7 +223,7 @@ impl Subnode {
             w_down,
             alpha: parent.alpha, // Inherit operating scale
             activation_count: 0,
-            credit_stats: OnlineStats::new(gamma),
+            credit_stats: child_credit_stats,
             health: 1.0,
             d_weights: None,
             cumulative_energy: 0.0, // Child starts plastic!

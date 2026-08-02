@@ -668,8 +668,9 @@ modeling the energetic cost of cell division.
 
 The child inherits $\alpha_\text{parent}$ (not re-randomized), since $\alpha$ encodes the
 correct operating scale; re-discovery from scratch would delay specialization.
-The child's credit statistics start fresh (count$=0$), triggering guaranteed first evaluation
-by the $+\infty$ prior score in \eqref{eq:thompson}.
+Crucially, the child inherits the parent's empirical credit statistics $(\mu_\text{parent},\, \text{Var}_\text{parent})$ with virtual count set to $n_\text{child} = 2.0$.
+This yields degrees of freedom $\nu_\text{child} = n_\text{child} - 1 = 1$, where the Student-$t$ distribution reduces to a heavy-tailed Cauchy distribution.
+Inheriting non-zero prior variance ensures $\mathrm{SE}_\text{child} = \sqrt{\mathrm{Var} / 2} > 0$, allowing Cauchy heavy tails to generate natural Bayesian exploration opportunities while the newborn's fully plastic weights ($E_{\text{cum}}^{(\text{child})} = 0 \implies \lambda_{\text{child}} = 0$) adapt to the new manifold. Zero extra hyperparameters are introduced.
 
 \paragraph{Pruning.}
 Subnodes with $h_j \le 0$ are eliminated after each full batch.
