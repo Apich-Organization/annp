@@ -104,14 +104,14 @@ impl Subnode {
     ///   - Aligns the credit statistics window with the fast_weight matrix size (d_head×d_head),
     ///     so credit history covers a comparable number of patterns as fast_weight can store.
     ///   - Fixed γ=0.99 would give N≈100, too short to distinguish stable subnode differences.
-    pub fn new_random(
+    pub fn new_with_rng<R: rand::Rng + ?Sized>(
         subnode_id: usize,
         d_head: usize,
         ffn_dim: usize,
         alpha_init: f32,
         gamma: f32,
+        rng: &mut R,
     ) -> Self {
-        let mut rng = rand::rng();
         // He/Kaiming scale: sqrt(2 / (fan_in + fan_out))
         let scale = (2.0 / (d_head + ffn_dim) as f64).sqrt() as f32;
 
@@ -151,6 +151,17 @@ impl Subnode {
             last_prediction: vec![0.0f32; d_head],
             last_token_id: None,
         }
+    }
+
+    pub fn new_random(
+        subnode_id: usize,
+        d_head: usize,
+        ffn_dim: usize,
+        alpha_init: f32,
+        gamma: f32,
+    ) -> Self {
+        let mut rng = rand::rng();
+        Self::new_with_rng(subnode_id, d_head, ffn_dim, alpha_init, gamma, &mut rng)
     }
 
     /// Spawns a new child Subnode from a parent, with a small data-driven perturbation.

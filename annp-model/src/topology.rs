@@ -47,9 +47,12 @@ pub struct RoutingTable {
 }
 
 impl RoutingTable {
-    pub fn new(d_head: usize, neighbors: Vec<usize>) -> Self {
+    pub fn new_with_rng<R: rand::Rng + ?Sized>(
+        d_head: usize,
+        neighbors: Vec<usize>,
+        rng: &mut R,
+    ) -> Self {
         let num_neighbors = neighbors.len();
-        let mut rng = rand::rng();
         let scale = (1.0 / (d_head as f32)).sqrt();
 
         let weights = (0..d_head * num_neighbors)
@@ -62,6 +65,11 @@ impl RoutingTable {
             weights,
             edge_credit: vec![OnlineStats::default(); num_neighbors],
         }
+    }
+
+    pub fn new(d_head: usize, neighbors: Vec<usize>) -> Self {
+        let mut rng = rand::rng();
+        Self::new_with_rng(d_head, neighbors, &mut rng)
     }
 
     /// Add a new neighbor link to routing table, dynamically expanding weight matrix shape [d_head, num_neighbors]
@@ -293,7 +301,12 @@ pub struct TopologyGrid {
 }
 
 impl TopologyGrid {
-    pub fn new(num_nodes: usize, d_head: usize, neighbors_per_node: usize) -> Self {
+    pub fn new_with_rng<R: rand::Rng + ?Sized>(
+        num_nodes: usize,
+        d_head: usize,
+        neighbors_per_node: usize,
+        rng: &mut R,
+    ) -> Self {
         let mut routing_tables = Vec::with_capacity(num_nodes);
 
         for i in 0..num_nodes {
@@ -329,13 +342,18 @@ impl TopologyGrid {
                 }
                 j += 1;
             }
-            routing_tables.push(RoutingTable::new(d_head, neighbors));
+            routing_tables.push(RoutingTable::new_with_rng(d_head, neighbors, rng));
         }
 
         Self {
             num_nodes,
             routing_tables,
         }
+    }
+
+    pub fn new(num_nodes: usize, d_head: usize, neighbors_per_node: usize) -> Self {
+        let mut rng = rand::rng();
+        Self::new_with_rng(num_nodes, d_head, neighbors_per_node, &mut rng)
     }
 
     /// Count total active P2P links across all routing tables

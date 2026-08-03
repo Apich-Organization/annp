@@ -1,7 +1,6 @@
 use crate::subnode::Subnode;
 use annp_core::{MicroBlockConfig, Particle, RMS_EPSILON};
 use annp_cuda;
-use rand::Rng;
 
 /// # MicroBlockNode — ANNP's fundamental decentralized compute cell
 ///
@@ -90,7 +89,12 @@ pub struct MicroBlockNode {
 }
 
 impl MicroBlockNode {
-    pub fn new(node_id: usize, config: MicroBlockConfig, use_cuda: bool) -> Self {
+    pub fn new_with_rng<R: rand::Rng + ?Sized>(
+        node_id: usize,
+        config: MicroBlockConfig,
+        use_cuda: bool,
+        rng: &mut R,
+    ) -> Self {
         let d_head = config.d_head;
         let ffn_dim = d_head * config.ffn_expansion;
 
@@ -98,7 +102,7 @@ impl MicroBlockNode {
         let memory_size = (d_head * d_head) as f32;
         let gamma = 1.0 - 1.0 / memory_size.max(1.0);
 
-        let mut primary_subnode = Subnode::new_random(0, d_head, ffn_dim, alpha_init, gamma);
+        let mut primary_subnode = Subnode::new_with_rng(0, d_head, ffn_dim, alpha_init, gamma, rng);
         if use_cuda {
             primary_subnode.d_weights = Some(annp_cuda::ffi::CudaDeviceWeights::new(
                 &primary_subnode.w_gate,
@@ -109,12 +113,9 @@ impl MicroBlockNode {
         let subnodes = vec![primary_subnode];
 
         let fast_weight_scale = 1.0 / (d_head as f32);
-        let fast_weight: Vec<f32> = {
-            let mut rng = rand::rng();
-            (0..d_head * d_head)
-                .map(|_| rng.random_range(-fast_weight_scale..fast_weight_scale))
-                .collect()
-        };
+        let fast_weight: Vec<f32> = (0..d_head * d_head)
+            .map(|_| rng.random_range(-fast_weight_scale..fast_weight_scale))
+            .collect();
 
         let queue_backpressure = config.queue_backpressure;
         let mut node = Self {
@@ -144,6 +145,11 @@ impl MicroBlockNode {
         };
         node.sync_cuda_weights();
         node
+    }
+
+    pub fn new(node_id: usize, config: MicroBlockConfig, use_cuda: bool) -> Self {
+        let mut rng = rand::rng();
+        Self::new_with_rng(node_id, config, use_cuda, &mut rng)
     }
 
     pub fn sync_cuda_weights(&mut self) {
@@ -329,17 +335,19 @@ impl MicroBlockNode {
         //   inactive: -1/d_head per step (always declining)
         // Subnodes with alpha < 1 must compensate via credit-driven health bonus.
         //
-        // Passive health decay happens ONCE per full batch (matching neurogenesis & pruning lifecycle frequency).
-        // Rate = 1/d_head per full batch.
-        let decay = 1.0 / (self.config.d_head as f32);
-        for subnode in self.subnodes.iter_mut() {
-            subnode.health -= decay;
-        }
+        // Passive health decay, neurogenesis and pruning only run during active learning/training
+        // (plasticity frozen during evaluation / inference when learning_rate is None).
+        if learning_rate.is_some() {
+            let decay = 1.0 / (self.config.d_head as f32);
+            for subnode in self.subnodes.iter_mut() {
+                subnode.health -= decay;
+            }
 
-        // Neurogenesis and pruning happen ONCE per full batch (not per sub-batch).
-        // This ensures enough credit signal has accumulated before making structural decisions.
-        self.try_subnode_neurogenesis();
-        self.prune_dominated_subnodes();
+            // Neurogenesis and pruning happen ONCE per full batch (not per sub-batch).
+            // This ensures enough credit signal has accumulated before making structural decisions.
+            self.try_subnode_neurogenesis();
+            self.prune_dominated_subnodes();
+        }
     }
 
     fn process_sub_batch(&mut self, particles: &mut [Particle], learning_rate: Option<f32>) {
@@ -408,11 +416,13 @@ impl MicroBlockNode {
         }
         self.active_subnode = active_idx;
         let active = active_idx;
-        self.subnodes[active].cumulative_energy += batch_energy;
-        // Only the winning (active) subnode recovers health, proportional to its own alpha.
-        // This couples vitality to the subnode's functional contribution strength.
-        let recovery = self.subnodes[active].alpha / (d_head as f32);
-        self.subnodes[active].health += recovery;
+        if learning_rate.is_some() {
+            self.subnodes[active].cumulative_energy += batch_energy;
+            // Only the winning (active) subnode recovers health, proportional to its own alpha.
+            // This couples vitality to the subnode's functional contribution strength.
+            let recovery = self.subnodes[active].alpha / (d_head as f32);
+            self.subnodes[active].health += recovery;
+        }
 
         let token_id = particles[0].header.origin_token_id;
 
@@ -862,7 +872,7 @@ impl MicroBlockNode {
             self.sum_squared_energy += energy;
         }
 
-        if valid_credit_count > 0.0 {
+        if learning_rate.is_some() && valid_credit_count > 0.0 {
             let mean_credit = total_batch_credit / valid_credit_count;
             self.subnodes[active].credit_stats.observe(mean_credit);
             if mean_credit > 0.0 {

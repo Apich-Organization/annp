@@ -62,6 +62,42 @@ impl ANNPModel {
         Self::new_with_cuda(num_nodes, num_shards, config, device, use_cuda)
     }
 
+    pub fn new_with_seed(
+        num_nodes: usize,
+        num_shards: usize,
+        config: MicroBlockConfig,
+        device: Device,
+        use_cuda: bool,
+        seed: u64,
+    ) -> Self {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        init_dtact_runtime();
+
+        let d_head = config.d_head;
+        let scattering = TokenScattering::new(num_shards, d_head, config.ingress_ratio);
+        let topology = TopologyGrid::new_with_rng(num_nodes, d_head, config.k_neighbors, &mut rng);
+
+        let nodes = (0..num_nodes)
+            .map(|i| MicroBlockNode::new_with_rng(i, config.clone(), use_cuda, &mut rng))
+            .collect();
+
+        let node_queues = vec![Vec::with_capacity(config.queue_backpressure); num_nodes];
+        let next_queues = vec![Vec::with_capacity(config.queue_backpressure); num_nodes];
+
+        Self {
+            config,
+            num_nodes,
+            scattering,
+            nodes,
+            topology,
+            device,
+            is_training: true,
+            node_queues,
+            next_queues,
+        }
+    }
+
     pub fn new_with_cuda(
         num_nodes: usize,
         num_shards: usize,
@@ -162,11 +198,13 @@ impl ANNPModel {
 
             let use_cuda_mode = self.nodes.first().is_some_and(|n| n.use_cuda);
 
+            let effective_lr = if self.is_training { lr } else { None };
+
             if use_cuda_mode {
                 // GPU Mode: Execute active nodes on CUDA GPU stream without CPU multi-threading contention
                 for (node, batch) in self.nodes.iter_mut().zip(curr_batches.iter_mut()) {
                     if !batch.is_empty() {
-                        node.process_batch(batch, lr);
+                        node.process_batch(batch, effective_lr);
                     }
                 }
             } else {
@@ -180,7 +218,7 @@ impl ANNPModel {
                         let node_addr = node as *mut MicroBlockNode as usize;
                         let batch_ptr = batch as *mut Vec<Particle> as usize;
 
-                        let current_lr = lr;
+                        let current_lr = effective_lr;
                         let _handle = dtact::spawn(async move {
                             #[cfg(target_arch = "x86_64")]
                             unsafe {
@@ -246,7 +284,7 @@ impl ANNPModel {
                                 next_hop = (next_hop + 1) % self.num_nodes;
                             }
                         }
-                        if p.credit_valid {
+                        if self.is_training && p.credit_valid {
                             self.topology.routing_tables[node_id]
                                 .observe_credit(next_hop, p.credit, &p.payload);
                         }
@@ -418,6 +456,117 @@ mod tests {
         let (output_tensor, loss) = model.forward(&input_tensor, 0, None)?;
         assert_eq!(output_tensor.dims2()?, (2, d_model));
         assert!(loss >= 0.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_deterministic_seeding() -> Result<()> {
+        let config = create_test_config();
+        let device = Device::Cpu;
+        let seed = 424242;
+
+        let mut model1 =
+            ANNPModel::new_with_seed(4, 4, config.clone(), device.clone(), false, seed);
+        let mut model2 = ANNPModel::new_with_seed(4, 4, config, device.clone(), false, seed);
+
+        // Verify initial weights match bit-for-bit
+        for (n1, n2) in model1.nodes.iter().zip(model2.nodes.iter()) {
+            assert_eq!(n1.fast_weight, n2.fast_weight);
+            assert_eq!(n1.subnodes.len(), n2.subnodes.len());
+            for (s1, s2) in n1.subnodes.iter().zip(n2.subnodes.iter()) {
+                assert_eq!(s1.w_gate, s2.w_gate);
+                assert_eq!(s1.w_up, s2.w_up);
+                assert_eq!(s1.w_down, s2.w_down);
+                assert_eq!(s1.alpha, s2.alpha);
+            }
+        }
+
+        for (rt1, rt2) in model1
+            .topology
+            .routing_tables
+            .iter()
+            .zip(model2.topology.routing_tables.iter())
+        {
+            assert_eq!(rt1.neighbors, rt2.neighbors);
+            assert_eq!(rt1.weights, rt2.weights);
+        }
+
+        let d_model = 4 * 64;
+        let input_tensor = Tensor::from_vec(vec![0.35f32; 4 * d_model], (4, d_model), &device)?;
+
+        let (out1, loss1) = model1.forward(&input_tensor, 0, None)?;
+        let (out2, loss2) = model2.forward(&input_tensor, 0, None)?;
+
+        let out1_vec: Vec<f32> = out1.flatten_all()?.to_vec1()?;
+        let out2_vec: Vec<f32> = out2.flatten_all()?.to_vec1()?;
+
+        assert_eq!(loss1, loss2);
+        assert_eq!(out1_vec, out2_vec);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_evaluation_plasticity_frozen() -> Result<()> {
+        let config = create_test_config();
+        let device = Device::Cpu;
+        let mut model = ANNPModel::new_with_seed(4, 4, config, device.clone(), false, 12345);
+        model.is_training = false;
+
+        // Snapshot state before forward pass
+        let initial_subnode_counts: Vec<usize> =
+            model.nodes.iter().map(|n| n.subnodes.len()).collect();
+        let initial_subnode_healths: Vec<Vec<f32>> = model
+            .nodes
+            .iter()
+            .map(|n| n.subnodes.iter().map(|s| s.health).collect())
+            .collect();
+        let initial_energies: Vec<Vec<f32>> = model
+            .nodes
+            .iter()
+            .map(|n| n.subnodes.iter().map(|s| s.cumulative_energy).collect())
+            .collect();
+        let initial_routing_weights: Vec<Vec<f32>> = model
+            .topology
+            .routing_tables
+            .iter()
+            .map(|rt| rt.weights.clone())
+            .collect();
+
+        let d_model = 4 * 64;
+        let input_tensor = Tensor::from_vec(vec![0.5f32; 10 * d_model], (10, d_model), &device)?;
+
+        // Run multiple eval forward passes
+        for _ in 0..5 {
+            let _ = model.forward(&input_tensor, 0, None)?;
+        }
+
+        // Verify that plasticity is 100% frozen
+        for (i, node) in model.nodes.iter().enumerate() {
+            assert_eq!(
+                node.subnodes.len(),
+                initial_subnode_counts[i],
+                "Subnode neurogenesis/pruning occurred during eval!"
+            );
+            for (j, s) in node.subnodes.iter().enumerate() {
+                assert_eq!(
+                    s.health, initial_subnode_healths[i][j],
+                    "Subnode health changed during eval!"
+                );
+                assert_eq!(
+                    s.cumulative_energy, initial_energies[i][j],
+                    "Subnode cumulative_energy changed during eval!"
+                );
+            }
+        }
+
+        for (i, rt) in model.topology.routing_tables.iter().enumerate() {
+            assert_eq!(
+                rt.weights, initial_routing_weights[i],
+                "Routing weights changed during eval!"
+            );
+        }
 
         Ok(())
     }

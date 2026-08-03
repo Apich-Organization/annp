@@ -8,7 +8,10 @@ pub mod logger;
 pub mod tokenizer;
 
 use clap::{Parser, Subcommand};
-use commands::{execute_edit_model, execute_export, execute_init, execute_run, execute_train};
+use commands::{
+    execute_edit_model, execute_eval, execute_export, execute_export_dataset, execute_init,
+    execute_init_checkpoint, execute_run, execute_train,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -78,6 +81,12 @@ enum Commands {
         #[arg(long, default_value = "logs")]
         log_dir: PathBuf,
     },
+    /// Evaluate model on external task fidelity metrics (Next-token MSE, CosSim, NMSE, PSNR, Recall Accuracy)
+    Eval(commands::eval::EvalArgs),
+    /// Initialize and export a clean, deterministic model checkpoint for reproducible control experiments
+    InitCheckpoint(commands::init_checkpoint::InitCheckpointArgs),
+    /// Export benchmark or synthetic dataset batches to file (JSONL, JSON, CSV, binary)
+    ExportDataset(commands::export_dataset::ExportDatasetArgs),
     /// Edit model checkpoint configuration headers with automatic backup (.bak)
     EditModel {
         /// Path to model checkpoint file (.annpb or .json)
@@ -178,6 +187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             benchmark,
             log_dir,
         )?,
+        Commands::Eval(args) => execute_eval(args)?,
+        Commands::InitCheckpoint(args) => execute_init_checkpoint(args)?,
+        Commands::ExportDataset(args) => execute_export_dataset(args)?,
         Commands::EditModel {
             checkpoint,
             config,

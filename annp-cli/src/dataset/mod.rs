@@ -159,13 +159,7 @@ impl DatasetStream {
         d_model: usize,
         device: &Device,
     ) -> Result<(Self, usize)> {
-        let p = path.as_ref();
         let toml_cfg = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml").ok();
-        let chunk_size = toml_cfg
-            .as_ref()
-            .and_then(|c| c.train.chunk_size)
-            .unwrap_or(8192);
-
         let num_batches = toml_cfg
             .as_ref()
             .and_then(|c| {
@@ -174,6 +168,22 @@ impl DatasetStream {
                     .or(Some((c.train.epochs * 500).max(32000)))
             })
             .unwrap_or(32000);
+        Self::new_with_batch_count(path, format, d_model, num_batches, device)
+    }
+
+    pub fn new_with_batch_count<P: AsRef<Path>>(
+        path: P,
+        format: DatasetFormat,
+        d_model: usize,
+        num_batches: usize,
+        device: &Device,
+    ) -> Result<(Self, usize)> {
+        let p = path.as_ref();
+        let toml_cfg = crate::config::AnnpTomlConfig::load_from_file("annp_config.toml").ok();
+        let chunk_size = toml_cfg
+            .as_ref()
+            .and_then(|c| c.train.chunk_size)
+            .unwrap_or(8192);
 
         // Streaming for synthetic / control benchmarks: true O(1) memory lazy generation
         if format.is_synthetic() {
