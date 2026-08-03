@@ -9,7 +9,7 @@ pub fn execute_init(output: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         output
     );
     println!(
-        "Edit this configuration to customize Micro-Block dimensions, 4-stage datasets, and eviction parameters."
+        "Edit this configuration to customize Micro-Block dimensions, datasets, and eviction parameters."
     );
     Ok(())
 }

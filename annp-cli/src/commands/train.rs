@@ -82,10 +82,7 @@ pub fn execute_train(
         );
     }
 
-    logger.log(
-        "SYSTEM",
-        "=== Starting ANNP Evolutionary Training Pipeline ===",
-    );
+    logger.log("SYSTEM", "=== Starting ANNP Training Pipeline ===");
     logger.log(
         "SYSTEM",
         &format!(

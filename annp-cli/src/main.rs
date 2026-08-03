@@ -27,7 +27,7 @@ enum Commands {
         #[arg(short, long, default_value = "annp_config.toml")]
         output: PathBuf,
     },
-    /// Train ANNP model through 2-stage evolutionary training with loss convergence tracking
+    /// Train ANNP model with loss convergence tracking
     Train {
         /// Configuration TOML path
         #[arg(short, long, default_value = "annp_config.toml")]
