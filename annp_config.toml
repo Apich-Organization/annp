@@ -21,10 +21,11 @@ pos_base_freq = 0.05
 subnode_max = 8
 
 [train]
-epochs = 64
+epochs = 8
 learning_rate = 0.0002
 weight_decay = 1e-4
 chunk_size = 1048576
 seq_len = 1024
-dataset_path = "stage_1_1-32001.json"
-dataset_format = "json"
+dataset_path = "synthetic"
+dataset_format = "synthetic"
+synthetic_batches = 3200

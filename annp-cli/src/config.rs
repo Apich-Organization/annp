@@ -46,6 +46,7 @@ pub struct TrainConfig {
     pub weight_decay: Option<f32>,
     pub chunk_size: Option<usize>,
     pub seq_len: Option<usize>,
+    pub synthetic_batches: Option<usize>,
 }
 
 impl Default for AnnpTomlConfig {
@@ -81,6 +82,7 @@ impl Default for AnnpTomlConfig {
                 weight_decay: Some(1e-4),
                 chunk_size: Some(1048576),
                 seq_len: Some(1024),
+                synthetic_batches: Some(32000),
             },
         }
     }
