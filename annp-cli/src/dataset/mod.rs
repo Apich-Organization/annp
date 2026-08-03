@@ -597,21 +597,20 @@ pub fn generate_single_associative_recall_tensor(
         .collect();
 
     for t in 0..seq_len {
-        for d in 0..d_model {
-            let val = if (4..=7).contains(&t) {
-                // Key sequence injection phase: K_0 at t=4, K_1 at t=5, K_2 at t=6, K_3 at t=7
-                key_sequence[t - 4][d]
-            } else if t == 44 {
-                // Trigger cue pulse
-                2.0f32
-            } else if (45..=48).contains(&t) {
-                // Exact sequential recall target phase: K_0 at t=45, K_1 at t=46, K_2 at t=47, K_3 at t=48
-                key_sequence[t - 45][d]
-            } else {
-                // Purely local zero-mean neutral background noise (strictly no global_t leakage)
-                rng.random_range(-0.15f32..0.15f32)
-            };
-            flat.push(val);
+        if (4..=7).contains(&t) {
+            // Key sequence injection phase: K_0 at t=4, K_1 at t=5, K_2 at t=6, K_3 at t=7
+            flat.extend_from_slice(&key_sequence[t - 4]);
+        } else if t == 44 {
+            // Trigger cue pulse
+            flat.extend(std::iter::repeat_n(2.0f32, d_model));
+        } else if (45..=48).contains(&t) {
+            // Exact sequential recall target phase: K_0 at t=45, K_1 at t=46, K_2 at t=47, K_3 at t=48
+            flat.extend_from_slice(&key_sequence[t - 45]);
+        } else {
+            // Purely local zero-mean neutral background noise (strictly no global_t leakage)
+            for _ in 0..d_model {
+                flat.push(rng.random_range(-0.15f32..0.15f32));
+            }
         }
     }
     Tensor::from_vec(flat, (seq_len, d_model), device)
@@ -885,51 +884,56 @@ pub fn generate_single_synthetic_pattern_tensor(
         })
         .collect();
 
-    for t in 0..seq_len {
-        let t_norm = (t as f32) * 0.05f32; // Strictly local time coordinate for within-sequence dynamics
-
-        for d in 0..d_model {
-            let d_norm = d as f32 / d_model as f32;
-            let d_val = d as f32 * 0.08f32;
-
-            let val = match current_mode {
-                0 => {
-                    // Multi-frequency Harmonic Resonance with Phase Coupling
-                    let low_freq =
-                        (t_norm * 0.2f32 + d_val).sin() + (t_norm * 0.05f32 - d_val * 0.5f32).cos();
-                    let high_freq = 0.4f32 * (t_norm * 3.0f32 + d_val * 4.0f32).sin();
-                    let coupling = 0.25f32 * (t_norm * 0.1f32 * d_val).sin();
-                    low_freq + high_freq + coupling
+    if current_mode == 1 {
+        // Reliable Long-Range Associative Memory Retrieval (Zero global_t leak)
+        for t in 0..seq_len {
+            if (4..=7).contains(&t) {
+                flat.extend_from_slice(&key_sequence[t - 4]);
+            } else if t == 44 {
+                flat.extend(std::iter::repeat_n(2.0f32, d_model));
+            } else if (45..=48).contains(&t) {
+                flat.extend_from_slice(&key_sequence[t - 45]);
+            } else {
+                for _ in 0..d_model {
+                    flat.push(rng.random_range(-0.15f32..0.15f32));
                 }
-                1 => {
-                    // Reliable Long-Range Associative Memory Retrieval (Zero global_t leak)
-                    if (4..=7).contains(&t) {
-                        key_sequence[t - 4][d]
-                    } else if t == 44 {
-                        2.0f32
-                    } else if (45..=48).contains(&t) {
-                        key_sequence[t - 45][d]
-                    } else {
-                        rng.random_range(-0.15f32..0.15f32)
+            }
+        }
+    } else {
+        for t in 0..seq_len {
+            let t_norm = (t as f32) * 0.05f32; // Strictly local time coordinate for within-sequence dynamics
+
+            for d in 0..d_model {
+                let d_norm = d as f32 / d_model as f32;
+                let d_val = d as f32 * 0.08f32;
+
+                let val = match current_mode {
+                    0 => {
+                        // Multi-frequency Harmonic Resonance with Phase Coupling
+                        let low_freq = (t_norm * 0.2f32 + d_val).sin()
+                            + (t_norm * 0.05f32 - d_val * 0.5f32).cos();
+                        let high_freq = 0.4f32 * (t_norm * 3.0f32 + d_val * 4.0f32).sin();
+                        let coupling = 0.25f32 * (t_norm * 0.1f32 * d_val).sin();
+                        low_freq + high_freq + coupling
                     }
-                }
-                2 => {
-                    // Hierarchical Nested Syntax (SwiGLU Modulation)
-                    let gate = (t_norm * 0.5f32 + d_val).sin();
-                    let up = (t_norm * 0.8f32 - d_val * 1.2f32).cos();
-                    let swish = gate / (1.0f32 + (-gate).exp());
-                    swish * up * (1.0f32 + 0.5f32 * d_norm)
-                }
-                _ => {
-                    // Zipfian Non-Linear Burst with Dynamic Phase Drift
-                    let zipf_factor = 1.0f32 / (1.0f32 + (d as f32 * 0.05f32));
-                    let carrier = (t_norm * 1.5f32 + d_norm * std::f32::consts::TAU).sin();
-                    let tanh_mod = (carrier * 2.0f32).tanh();
-                    tanh_mod * zipf_factor * 1.8f32
-                }
-            };
+                    2 => {
+                        // Hierarchical Nested Syntax (SwiGLU Modulation)
+                        let gate = (t_norm * 0.5f32 + d_val).sin();
+                        let up = (t_norm * 0.8f32 - d_val * 1.2f32).cos();
+                        let swish = gate / (1.0f32 + (-gate).exp());
+                        swish * up * (1.0f32 + 0.5f32 * d_norm)
+                    }
+                    _ => {
+                        // Zipfian Non-Linear Burst with Dynamic Phase Drift
+                        let zipf_factor = 1.0f32 / (1.0f32 + (d as f32 * 0.05f32));
+                        let carrier = (t_norm * 1.5f32 + d_norm * std::f32::consts::TAU).sin();
+                        let tanh_mod = (carrier * 2.0f32).tanh();
+                        tanh_mod * zipf_factor * 1.8f32
+                    }
+                };
 
-            flat.push(val);
+                flat.push(val);
+            }
         }
     }
     Tensor::from_vec(flat, (seq_len, d_model), device)
